@@ -20,6 +20,8 @@ Then open `http://localhost:8000`, enter `ws://localhost:8765` in the URL box an
 Connect. That is the whole procedure: the compose file brings up both the app and the
 microcontroller simulator, and the image compiles the optional C decimator on the way.
 
+For extra data about the connection and performance, open `http://localhost:8000/?debug=1`.
+
 ## Quickstart (native, Ubuntu 24.04 / Fedora 42)
 
 ```
