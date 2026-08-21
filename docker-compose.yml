@@ -10,7 +10,11 @@ services:
       - SAMPLE_RATE_HZ=2000000
       - EXPECTED_SAMPLES=20000
       - PUBLISH_HZ=30
-      - TARGET_COLUMNS=1000
+      # 500, not 1000: min/max emits two points per column, so 1000 columns puts two
+      # vertices on every pixel of a ~1000 px plot and TD redraws collapse to 7/s on a
+      # 30 Hz stream. See DEFAULT_TARGET_COLUMNS in backend/domain/decimation.py.
+      - TARGET_COLUMNS=500
+      # FD draws one line per bin rather than a min/max band, so 1000 is comfortable here.
       - SPECTRUM_BINS=1000
     depends_on:
       - simulator

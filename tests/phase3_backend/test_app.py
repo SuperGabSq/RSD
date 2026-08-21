@@ -17,7 +17,9 @@ def test_defaults_describe_the_brief():
     assert config.expected_samples == 20_000
     assert config.nominal_sample_rate_hz == 2_000_000
     assert config.publish_hz == 30.0
-    assert config.target_columns == 1_000
+    # 500 rather than 1 000: a min/max column is two vertices, and 1 000 of them saturates
+    # the canvas rasteriser. The reasoning and the measurements are on the constant itself.
+    assert config.target_columns == 500
 
 
 def test_every_setting_is_reachable_from_the_environment():
@@ -27,7 +29,7 @@ def test_every_setting_is_reachable_from_the_environment():
             "EXPECTED_SAMPLES": "4096",
             "SAMPLE_RATE_HZ": "500000",
             "RATE_EMA_ALPHA": "0.5",
-            "TARGET_COLUMNS": "500",
+            "TARGET_COLUMNS": "250",
             "SPECTRUM_BINS": "256",
             "PUBLISH_HZ": "15",
             "MAX_PENDING_REPORTS": "99",
@@ -38,7 +40,7 @@ def test_every_setting_is_reachable_from_the_environment():
     assert config.expected_samples == 4096
     assert config.nominal_sample_rate_hz == 500_000
     assert config.rate_ema_alpha == 0.5
-    assert config.target_columns == 500
+    assert config.target_columns == 250
     assert config.spectrum_bins == 256
     assert config.publish_hz == 15.0
     assert config.max_pending_reports == 99
