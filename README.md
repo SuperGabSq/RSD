@@ -280,7 +280,7 @@ Pure, dependency-free (stdlib + numpy + xxhash), fully unit-tested:
 |---|---|---|
 | `frame.py` | `RawFrame`, `FrameReport` | Frozen dataclasses with `slots`; two clocks — wall-clock for the displayed timestamp, monotonic for rate deltas, so an NTP step can never produce a bogus rate |
 | `hashing.py` | `FrameHasher` protocol, `Xxh3_128Hasher` | Hashes raw bytes before and independently of validation, so a corrupted frame is still fingerprintable |
-| `validation.py` | `FrameValidator` | Distinguishes *wrong sample count* from *malformed* (length not a multiple of 4); both render red, only the second is a framing fault |
+| `validation.py` | `FrameValidator` | Distinguishes *wrong sample count* from *malformed* (length not a multiple of 4); both render red (orange-red for the latter), only the second is a framing fault |
 | `rate.py` | `SampleRateEstimator` | Reports instantaneous **and** EMA-smoothed rate so the smoothing hides nothing; unmeasurable intervals report `None` rather than poisoning the EMA with infinity |
 | `decimation.py` | `MinMaxDecimator` | Min/max, not stride — stride sampling aliases and drops single-sample transients, which is exactly what an operator is watching for |
 | `spectrum.py` | `SpectrumAnalyzer` | Hann window with coherent-gain correction; **max**-per-bucket reduction so a narrow spur survives being squeezed from 10 001 bins into 1 000 |
@@ -294,7 +294,11 @@ These are the assumptions made where the brief left something unspecified.
    requirement that mismatched frames log in red implies mismatches can occur.
 2. Sample count is derived as `len(payload) // 4`. A payload whose length is not a multiple
    of 4 is a malformed frame: logged red with the truncated count and a `malformed` flag. We
-   do not attempt to realign or reassemble across frames.
+   do not attempt to realign or reassemble across frames. Both faults render red, as the
+   brief requires — a malformed payload also reports a sample count that differs from the
+   expected one — but malformed lines are hue-shifted to orange-red so the two can be told
+   apart without reading the count. Red still means "this frame is wrong"; the hue says
+   which way.
 3. The hash is computed over the raw bytes exactly as received, before and independently of
    validation. A short frame still gets a hash — otherwise a corrupted frame would be
    undiagnosable.
