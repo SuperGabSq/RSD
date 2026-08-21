@@ -22,8 +22,9 @@ Fault injection (see README §Assumptions #13):
                           separately.
     --drop-after N        close the connection after N frames, to exercise the
                           connection-drop popup requirement.
-    --rate-factor F       scale the frame rate (0.5 -> ~1 Msps, 2.0 -> ~4 Msps), to exercise
-                          the sample-rate gauge / tolerance styling.
+    --rate-factor F       scale the frame rate (0.5 -> ~1 Msps, 2.0 -> ~4 Msps), so the
+                          sample-rate gauge can be seen tracking a real change rather than
+                          only ever sitting at nominal.
 
 Every flag above is also settable per connection, as a query parameter on the WebSocket
 URL, using the same name with underscores. The flags remain the defaults; a query

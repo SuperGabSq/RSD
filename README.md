@@ -20,6 +20,8 @@ Then open `http://localhost:8000`, enter `ws://localhost:8765` in the URL box an
 Connect. That is the whole procedure: the compose file brings up both the app and the
 microcontroller simulator, and the image compiles the optional C decimator on the way.
 
+For extra data about the connection and performance, open `http://localhost:8000/?debug=1`.
+
 ## Quickstart (native, Ubuntu 24.04 / Fedora 42)
 
 ```
@@ -47,7 +49,7 @@ these into the WebSocket URL field and press Connect. Nothing to restart, nothin
 ws://localhost:8765/                        clean 2 Msps stream
 ws://localhost:8765/?bad_frame_every=25     red log lines
 ws://localhost:8765/?drop_after=500         drop popup
-ws://localhost:8765/?rate_factor=0.5        gauge out of tolerance
+ws://localhost:8765/?rate_factor=0.5        gauge reads ~1 Msps, deviation −50 %
 ws://localhost:8765/?malformed_every=40     corrupt framing (reported separately)
 ```
 
@@ -62,7 +64,7 @@ not named in the URL keeps the flag's value.
 python backend/mock/mock_uc_server.py --port 8765                      # clean 2 Msps stream
 python backend/mock/mock_uc_server.py --port 8765 --bad-frame-every 25 # red log lines
 python backend/mock/mock_uc_server.py --port 8765 --drop-after 500     # drop popup
-python backend/mock/mock_uc_server.py --port 8765 --rate-factor 0.5    # gauge out of tolerance
+python backend/mock/mock_uc_server.py --port 8765 --rate-factor 0.5    # gauge reads ~1 Msps
 ```
 
 | Flag | URL parameter | Default | Effect |
@@ -259,8 +261,8 @@ While no plot is visible, waveforms are not even parked.
   waveform, thirty times a second, for ever. TD stays `Int32Array` so displayed values
   are exactly the counts received — no lossy conversion inside a measurement instrument.
 
-**Downstream bandwidth:** 2 000 × 4 B ≈ 8 kB per waveform × 30 Hz ≈ **240 kB/s** — a
-**33× reduction** from 8 MB/s upstream, with no loss of visible detail.
+**Downstream bandwidth:** 500 columns × 2 (min, max) × 4 B ≈ 4 kB per waveform × 30 Hz ≈
+**120 kB/s** — a **67× reduction** from 8 MB/s upstream, with no loss of visible detail.
 
 ### Why `gunicorn -w 1`
 
@@ -280,7 +282,7 @@ Pure, dependency-free (stdlib + numpy + xxhash), fully unit-tested:
 |---|---|---|
 | `frame.py` | `RawFrame`, `FrameReport` | Frozen dataclasses with `slots`; two clocks — wall-clock for the displayed timestamp, monotonic for rate deltas, so an NTP step can never produce a bogus rate |
 | `hashing.py` | `FrameHasher` protocol, `Xxh3_128Hasher` | Hashes raw bytes before and independently of validation, so a corrupted frame is still fingerprintable |
-| `validation.py` | `FrameValidator` | Distinguishes *wrong sample count* from *malformed* (length not a multiple of 4); both render red, only the second is a framing fault |
+| `validation.py` | `FrameValidator` | Distinguishes *wrong sample count* from *malformed* (length not a multiple of 4); both render red (orange-red for the latter), only the second is a framing fault |
 | `rate.py` | `SampleRateEstimator` | Reports instantaneous **and** EMA-smoothed rate so the smoothing hides nothing; unmeasurable intervals report `None` rather than poisoning the EMA with infinity |
 | `decimation.py` | `MinMaxDecimator` | Min/max, not stride — stride sampling aliases and drops single-sample transients, which is exactly what an operator is watching for |
 | `spectrum.py` | `SpectrumAnalyzer` | Hann window with coherent-gain correction; **max**-per-bucket reduction so a narrow spur survives being squeezed from 10 001 bins into 1 000 |
@@ -294,7 +296,11 @@ These are the assumptions made where the brief left something unspecified.
    requirement that mismatched frames log in red implies mismatches can occur.
 2. Sample count is derived as `len(payload) // 4`. A payload whose length is not a multiple
    of 4 is a malformed frame: logged red with the truncated count and a `malformed` flag. We
-   do not attempt to realign or reassemble across frames.
+   do not attempt to realign or reassemble across frames. Both faults render red, as the
+   brief requires — a malformed payload also reports a sample count that differs from the
+   expected one — but malformed lines are hue-shifted to orange-red so the two can be told
+   apart without reading the count. Red still means "this frame is wrong"; the hue says
+   which way.
 3. The hash is computed over the raw bytes exactly as received, before and independently of
    validation. A short frame still gets a hash — otherwise a corrupted frame would be
    undiagnosable.
@@ -314,8 +320,16 @@ These are the assumptions made where the brief left something unspecified.
 10. Sample rate is estimated per frame as `samples_in_frame / (t_n − t_{n-1})`. The first
     frame of a session has no predecessor and reports `null` (no rate line, no bogus value
     computed from time-since-connect).
-11. The gauge shows a smoothed rate (EMA, α = 0.1); the log shows the instantaneous per-frame
-    value. Both are shown so nothing is hidden.
+11. The gauge shows a smoothed rate (EMA, α = 0.1, applied to the arrival *interval* — see
+    [One measurement, three statistics](#one-measurement-three-statistics)); the log shows
+    the instantaneous per-frame value. Both are shown so nothing is hidden.
+    The gauge **reports** the rate and does not **grade** it: it has no tolerance bands and
+    no pass/fail colouring. The brief asks for "the estimated sample rate (measured at every
+    frame) in an output text box of a graphical gauge" and specifies no tolerance, so any
+    threshold would have been invented here — and an invented one measured the transport,
+    not the instrument. It also reserves red for a specific meaning (a frame whose sample
+    count is wrong), which a red gauge on a healthy stream would have competed with. The
+    deviation-from-nominal percentage is still displayed, as a number.
 12. Sample values are raw ADC counts. No calibration to volts — no scale factor was provided.
 
 ### Scope & lifecycle
@@ -344,6 +358,25 @@ These are the assumptions made where the brief left something unspecified.
 
 "Is Python fast enough for 8 MB/s?" is the first question this design invites, so here
 is the arithmetic. The numbers that matter:
+
+**Though it turned out not to be the binding constraint.** Python had ~300× headroom on
+the hot path and never came close to being the bottleneck; the browser's *rasteriser*
+was. Min/max decimation emits two vertices per column, so `TARGET_COLUMNS=1000` handed a
+~1 000 px plot two vertices per pixel under a full-height band fill, and the time-domain
+plot managed **7 redraws/s against a 30 Hz stream** while the frequency-domain plot,
+drawing one line over the same 1 000 bins, held 31. A CPU profile put 97 % of the time in
+browser paint and effectively none in our decode loop.
+
+| `TARGET_COLUMNS` | 1000 | 800 | 640 | 500 | 250 |
+|---|---|---|---|---|---|
+| TD redraws/s | 7 | 22 | 31 | 29 | 31 |
+
+The knee is between 800 and 640, where vertex density crosses one per pixel. The app
+ships **500**, comfortably past it. Nothing is lost: min/max preserves the exact peak
+excursions at any column count, so this trades horizontal resolution from one column per
+pixel to one per two and no spike disappears. The general lesson is that a frontend
+budget written in units of *work the CPU does* misses the work the rasteriser does, and
+only the second one was ever the constraint here.
 
 | Quantity | Value |
 |---|---|
@@ -375,7 +408,7 @@ runs. Both paths produce **byte-identical** output, held there by a property tes
 random buffers at every awkward length the fault injector can produce (19 995, 19 999,
 fewer samples than columns).
 
-| Path | Per frame, 20 000 samples → 1 000 columns |
+| Path | Per frame, 20 000 samples → 1 000 columns (as benchmarked; the app now ships 500) |
 |---|---|
 | C via `ctypes` | **22.8 µs** |
 | numpy | 59.1 µs |
@@ -395,21 +428,39 @@ consumers need different things from the same number:
 | Statistic | Shown on | Why that one |
 |---|---|---|
 | Instantaneous | each log line | the honest per-frame value the brief asks for |
-| EMA (α = 0.1) | the gauge | readable; responds to a real change in ~10 frames |
+| EMA (α = 0.1) of the **interval** | the gauge | readable; responds to a real change in ~10 frames |
 | Session mean | the FD frequency axis | immune to a single stall-and-burst |
 
-The third is not decoration. A frequency axis is `fs/2` wide, so any error in `fs` moves
-*every* peak by the same proportion — and the EMA averages **reciprocal** arrival
-intervals, which is convex, so jitter biases it upward by roughly `(σ/Δt)²`. On a loaded
-host that is +1 % at 1 ms of jitter, and transient excursions past 6 Msps are reachable,
-which would put a 50 kHz tone at 157 kHz. Total samples over total elapsed time cannot
-move like that: a burst arriving early is cancelled by the gap before it.
+**Average the interval, not the rate.** The rate is `1/Δt`, and the reciprocal is convex,
+so the two directions of the same jitter are not weighted alike. A frame arriving 6 µs
+after its predecessor — ordinary TCP coalescing — reports 3.3 Gsps, while the gap that
+compensates for it can only ever pull the estimate toward zero. Averaging those unequal
+excursions biases the result upward by roughly `(σ/Δt)²` and lets one coalesced burst
+dominate the EMA for its whole time constant.
 
-**This means the gauge reads slightly high on a jittery machine, by an amount that
-depends on the host rather than on the instrument.** It is a property of the estimator
-the brief specifies, not a defect, and it is not something the EMA can remove — the bias
-is in the mean. The per-frame value is displayed beside the smoothed one precisely so
-nothing is hidden.
+That is not theoretical. Measured over 20 s on loopback — the friendliest possible
+transport, against a simulator pacing a flat 100.0 Hz:
+
+| Smoothing | p50 \|dev\| | p95 \|dev\| | max \|dev\| | > 5 % from nominal |
+|---|---|---|---|---|
+| EMA of the rate | 0.76 % | 3.55 % | **16 375 %** | 4.5 % of the time |
+| EMA of the interval | 0.52 % | 1.05 % | 17 % | 0.3 % of the time |
+| Session mean | 0.01 % | 0.07 % | 0.15 % | never |
+
+Smoothing `Δt / samples` and inverting once at the end removes the asymmetry at its
+source, because the averaging now happens in the domain where the noise actually lives.
+Same α, same "measured at every frame" contract, same class — no display trick, and no
+threshold tuned until the symptom went away. The biased number was wrong; this one is not.
+
+The session mean survives as the third statistic because even an unbiased ten-frame EMA
+still swings by whole percent under a stall-and-burst, and a frequency axis is `fs/2`
+wide — any error in `fs` walks *every* peak by the same proportion while the user is
+looking at it. Total samples over total elapsed time cannot move like that: a burst
+arriving early is cancelled by the gap before it. It still tracks a genuine rate change
+(`?rate_factor=0.5`) over seconds rather than frames, which is the right time constant for
+a property of the hardware rather than of the link.
+
+The per-frame value is displayed beside the smoothed one throughout, so nothing is hidden.
 
 The point is not that Python is fast. It is that at 100 Hz the *Python* work per frame
 is a handful of dictionary and attribute operations, while the per-sample work happens
@@ -419,16 +470,21 @@ which is why a single Flask process with two worker threads is not merely adequa
 but generously so.
 
 **Measured, not asserted.** `tests/phase3_backend/test_pipeline_soak.py` runs the real simulator into
-the real pipeline over a real socket:
+the real pipeline over a real socket, and *asserts* rather than reports:
 
-- 5-minute soak: **30 026 frames received, 30 026 reported, zero gaps, zero drops.**
-- Acquisition held ~100 Hz while presentation held ~30 Hz — the rate-decoupling claim,
+- **Every frame received is reported, with no gaps and no drops**, across a 5-minute run.
+- Acquisition holds ~100 Hz while presentation holds ~30 Hz — the rate-decoupling claim,
   measured end to end rather than argued.
-- RSS after warm-up: **flat** (≈12 KiB of movement across 13 000 frames in the trace
-  run). This is the test that catches an unbounded queue, which is otherwise invisible:
-  the frame rate stays perfect right up until the process dies.
+- RSS is **flat** after warm-up. This is the test that catches an unbounded queue, which
+  is otherwise invisible: the frame rate stays perfect right up until the process dies.
 
 Run it with `pytest -m slow` (`SOAK_SECONDS=60` for a quicker pass).
+
+Deliberately no frame counts here. Exact totals are a property of the host that produced
+them — its scheduler, its core count, its load — so a number quoted from my machine is
+not a number this test will produce on yours, and a figure a reviewer cannot reproduce is
+worth less than the assertion that produced it. The pass/fail conditions above are the
+claim; the test is the evidence.
 
 **On WebGL** — named in the job description, and deliberately not used. 2 000 decimated
 columns per frame at 30 Hz sits far below the point where Canvas 2D struggles; uPlot
@@ -450,7 +506,7 @@ framework, no build step. Eight modules:
 - `modal`: native `<dialog>` controller for connection and runtime error dialogs.
 - `plotTD`: uPlot time-domain renderer. Preallocated buffers, an rAF latest-wins render loop, asymmetric-hysteresis autoscale, 2D drag-zoom, trace hold, and a 250 ms latched fault tint. Scales are driven by uPlot `range` callbacks so each frame costs exactly one redraw.
 - `plotFD`: the frequency-domain counterpart (stretch S1/S4) — Hann-windowed spectrum, backend-supplied frequency axis, live peak readout, max hold.
-- `rateGauge`: precision SVG radial arc gauge with dynamic nominal baseline, percentage deviation, and tolerance color token styling.
+- `rateGauge`: precision SVG radial arc gauge with dynamic nominal baseline and percentage deviation. Two visual states, idle and streaming; no pass/fail colouring.
 - `app`: dependency injection, DOM binding, and `?debug=1` performance HUD.
 
 ### Key Architectural & Design Decisions
@@ -461,7 +517,7 @@ framework, no build step. Eight modules:
 - **Preallocated Buffers & Zero-Copy Alignment**: Binary waveforms arrive as 8-byte header (`<IBBH`) + int32 min/max pairs. The frontend creates a typed `new Int32Array(event.data, 8, pointCount * 2)` view directly over the aligned `ArrayBuffer` and de-interleaves in-place into preallocated typed arrays without GC churn.
 - **Exact Span for Truncated Frames**: The frontend caches `frameNumber -> sample_count` from incoming frame log batches so that truncated/malformed frames map to their exact true sample span rather than stretching to fill nominal width.
 - **2D Drag-Zoom with Autoscale Hysteresis**: Oscilloscope amplitude/time zoom is enabled via uPlot 2D box selection (`drag: { x: true, y: true }`). In autoscale mode, expansion is instantaneous on new peaks while contraction uses a 1.0s decay window to prevent dizzying jitter.
-- **Dynamic Tolerance Rate Gauge**: Configured via `nominalRateHz` from the backend handshake, showing continuous percentage deviation and colouring nominal (emerald, ≤ ±1 %), warning (amber, ±1–5 %) and out-of-tolerance (rose, > 5 %). One class on the gauge root drives arc, readout and badge, so they cannot disagree. The arc carries **no** `stroke-dashoffset` transition: the offset is rewritten every 33 ms, and a transition longer than the update interval never arrives.
+- **Rate Gauge**: Configured via `nominalRateHz` from the backend handshake, showing the smoothed rate, the instantaneous rate and the percentage deviation from nominal. It reports; it does not grade — see assumption #11 for why the tolerance bands it used to carry were removed rather than retuned. One class on the gauge root drives arc, readout and badge, so they cannot disagree. The arc carries **no** `stroke-dashoffset` transition: the offset is rewritten every 33 ms, and a transition longer than the update interval never arrives.
 - **Fault flags are complete even though waveforms are not**: waveforms are latest-wins, and because acquisition (100 Hz) and publication (30 Hz) are both monotonic-paced, the surviving frame cycles through a *fixed* set of residues rather than a random one — measured, that set never contained a faulted frame. The backend therefore OR-s every fault seen during a tick interval onto whichever frame is drawn. The trace says "something in this 33 ms was wrong"; the log says exactly which frame.
 - **Export (stretch S3)**: the retained ring buffer is already the export — `Export CSV` writes the last 5 000 frame reports (`frame,timestamp,samples,hash,valid,malformed,estimated_rate_hz`) via a Blob. The complete log is the deliverable, so it is what is exported; re-exporting a decimated envelope would be exporting the plot rather than the data.
 - **Visibility Gating**: Background tabs automatically request `setDomain('none')` to halt binary waveform serialization on the backend and reduce browser draw CPU to zero.

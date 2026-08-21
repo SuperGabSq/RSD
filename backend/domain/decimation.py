@@ -32,7 +32,25 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-DEFAULT_TARGET_COLUMNS = 1_000
+# 500 columns, not 1 000, and the reason is the canvas rather than the arithmetic.
+#
+# Min/max emits *two* points per column, so N columns is 2N vertices. The plot is about
+# 1 000 px wide, so 1 000 columns put two vertices on every pixel -- a sub-pixel zigzag
+# under a filled band spanning the full plot height, which is close to the worst case a
+# 2D rasteriser can be handed. Measured against the real app, time-domain redraws
+# collapsed to 7/s on a 30 Hz stream while the frequency-domain plot, drawing one line
+# over the same 1 000 bins, held 31/s. A CPU profile put 97 % of the time in browser
+# paint and ~0 in our decode loop, so no amount of tuning on this side of the wire would
+# have moved it.
+#
+#     columns      1000   800   640   500   250
+#     TD draws/s      7    22    31    29    31
+#
+# The knee is between 800 and 640, where vertex density crosses one per pixel; 500 sits
+# comfortably past it. Nothing is lost by going there: min/max preserves the exact peak
+# excursions at any column count -- that is what it is for -- so this trades horizontal
+# resolution from one column per pixel to one per two, and no spike disappears.
+DEFAULT_TARGET_COLUMNS = 500
 
 # Optional C implementation of the same reduction, bound with ctypes -- stdlib, so the
 # dependency rule still holds. It is not here for speed: numpy already does this in C in
