@@ -47,7 +47,7 @@ these into the WebSocket URL field and press Connect. Nothing to restart, nothin
 ws://localhost:8765/                        clean 2 Msps stream
 ws://localhost:8765/?bad_frame_every=25     red log lines
 ws://localhost:8765/?drop_after=500         drop popup
-ws://localhost:8765/?rate_factor=0.5        gauge out of tolerance
+ws://localhost:8765/?rate_factor=0.5        gauge reads ~1 Msps, deviation −50 %
 ws://localhost:8765/?malformed_every=40     corrupt framing (reported separately)
 ```
 
@@ -62,7 +62,7 @@ not named in the URL keeps the flag's value.
 python backend/mock/mock_uc_server.py --port 8765                      # clean 2 Msps stream
 python backend/mock/mock_uc_server.py --port 8765 --bad-frame-every 25 # red log lines
 python backend/mock/mock_uc_server.py --port 8765 --drop-after 500     # drop popup
-python backend/mock/mock_uc_server.py --port 8765 --rate-factor 0.5    # gauge out of tolerance
+python backend/mock/mock_uc_server.py --port 8765 --rate-factor 0.5    # gauge reads ~1 Msps
 ```
 
 | Flag | URL parameter | Default | Effect |
@@ -314,8 +314,16 @@ These are the assumptions made where the brief left something unspecified.
 10. Sample rate is estimated per frame as `samples_in_frame / (t_n − t_{n-1})`. The first
     frame of a session has no predecessor and reports `null` (no rate line, no bogus value
     computed from time-since-connect).
-11. The gauge shows a smoothed rate (EMA, α = 0.1); the log shows the instantaneous per-frame
-    value. Both are shown so nothing is hidden.
+11. The gauge shows a smoothed rate (EMA, α = 0.1, applied to the arrival *interval* — see
+    [One measurement, three statistics](#one-measurement-three-statistics)); the log shows
+    the instantaneous per-frame value. Both are shown so nothing is hidden.
+    The gauge **reports** the rate and does not **grade** it: it has no tolerance bands and
+    no pass/fail colouring. The brief asks for "the estimated sample rate (measured at every
+    frame) in an output text box of a graphical gauge" and specifies no tolerance, so any
+    threshold would have been invented here — and an invented one measured the transport,
+    not the instrument. It also reserves red for a specific meaning (a frame whose sample
+    count is wrong), which a red gauge on a healthy stream would have competed with. The
+    deviation-from-nominal percentage is still displayed, as a number.
 12. Sample values are raw ADC counts. No calibration to volts — no scale factor was provided.
 
 ### Scope & lifecycle
@@ -395,21 +403,39 @@ consumers need different things from the same number:
 | Statistic | Shown on | Why that one |
 |---|---|---|
 | Instantaneous | each log line | the honest per-frame value the brief asks for |
-| EMA (α = 0.1) | the gauge | readable; responds to a real change in ~10 frames |
+| EMA (α = 0.1) of the **interval** | the gauge | readable; responds to a real change in ~10 frames |
 | Session mean | the FD frequency axis | immune to a single stall-and-burst |
 
-The third is not decoration. A frequency axis is `fs/2` wide, so any error in `fs` moves
-*every* peak by the same proportion — and the EMA averages **reciprocal** arrival
-intervals, which is convex, so jitter biases it upward by roughly `(σ/Δt)²`. On a loaded
-host that is +1 % at 1 ms of jitter, and transient excursions past 6 Msps are reachable,
-which would put a 50 kHz tone at 157 kHz. Total samples over total elapsed time cannot
-move like that: a burst arriving early is cancelled by the gap before it.
+**Average the interval, not the rate.** The rate is `1/Δt`, and the reciprocal is convex,
+so the two directions of the same jitter are not weighted alike. A frame arriving 6 µs
+after its predecessor — ordinary TCP coalescing — reports 3.3 Gsps, while the gap that
+compensates for it can only ever pull the estimate toward zero. Averaging those unequal
+excursions biases the result upward by roughly `(σ/Δt)²` and lets one coalesced burst
+dominate the EMA for its whole time constant.
 
-**This means the gauge reads slightly high on a jittery machine, by an amount that
-depends on the host rather than on the instrument.** It is a property of the estimator
-the brief specifies, not a defect, and it is not something the EMA can remove — the bias
-is in the mean. The per-frame value is displayed beside the smoothed one precisely so
-nothing is hidden.
+That is not theoretical. Measured over 20 s on loopback — the friendliest possible
+transport, against a simulator pacing a flat 100.0 Hz:
+
+| Smoothing | p50 \|dev\| | p95 \|dev\| | max \|dev\| | > 5 % from nominal |
+|---|---|---|---|---|
+| EMA of the rate | 0.76 % | 3.55 % | **16 375 %** | 4.5 % of the time |
+| EMA of the interval | 0.52 % | 1.05 % | 17 % | 0.3 % of the time |
+| Session mean | 0.01 % | 0.07 % | 0.15 % | never |
+
+Smoothing `Δt / samples` and inverting once at the end removes the asymmetry at its
+source, because the averaging now happens in the domain where the noise actually lives.
+Same α, same "measured at every frame" contract, same class — no display trick, and no
+threshold tuned until the symptom went away. The biased number was wrong; this one is not.
+
+The session mean survives as the third statistic because even an unbiased ten-frame EMA
+still swings by whole percent under a stall-and-burst, and a frequency axis is `fs/2`
+wide — any error in `fs` walks *every* peak by the same proportion while the user is
+looking at it. Total samples over total elapsed time cannot move like that: a burst
+arriving early is cancelled by the gap before it. It still tracks a genuine rate change
+(`?rate_factor=0.5`) over seconds rather than frames, which is the right time constant for
+a property of the hardware rather than of the link.
+
+The per-frame value is displayed beside the smoothed one throughout, so nothing is hidden.
 
 The point is not that Python is fast. It is that at 100 Hz the *Python* work per frame
 is a handful of dictionary and attribute operations, while the per-sample work happens
@@ -450,7 +476,7 @@ framework, no build step. Eight modules:
 - `modal`: native `<dialog>` controller for connection and runtime error dialogs.
 - `plotTD`: uPlot time-domain renderer. Preallocated buffers, an rAF latest-wins render loop, asymmetric-hysteresis autoscale, 2D drag-zoom, trace hold, and a 250 ms latched fault tint. Scales are driven by uPlot `range` callbacks so each frame costs exactly one redraw.
 - `plotFD`: the frequency-domain counterpart (stretch S1/S4) — Hann-windowed spectrum, backend-supplied frequency axis, live peak readout, max hold.
-- `rateGauge`: precision SVG radial arc gauge with dynamic nominal baseline, percentage deviation, and tolerance color token styling.
+- `rateGauge`: precision SVG radial arc gauge with dynamic nominal baseline and percentage deviation. Two visual states, idle and streaming; no pass/fail colouring.
 - `app`: dependency injection, DOM binding, and `?debug=1` performance HUD.
 
 ### Key Architectural & Design Decisions
@@ -461,7 +487,7 @@ framework, no build step. Eight modules:
 - **Preallocated Buffers & Zero-Copy Alignment**: Binary waveforms arrive as 8-byte header (`<IBBH`) + int32 min/max pairs. The frontend creates a typed `new Int32Array(event.data, 8, pointCount * 2)` view directly over the aligned `ArrayBuffer` and de-interleaves in-place into preallocated typed arrays without GC churn.
 - **Exact Span for Truncated Frames**: The frontend caches `frameNumber -> sample_count` from incoming frame log batches so that truncated/malformed frames map to their exact true sample span rather than stretching to fill nominal width.
 - **2D Drag-Zoom with Autoscale Hysteresis**: Oscilloscope amplitude/time zoom is enabled via uPlot 2D box selection (`drag: { x: true, y: true }`). In autoscale mode, expansion is instantaneous on new peaks while contraction uses a 1.0s decay window to prevent dizzying jitter.
-- **Dynamic Tolerance Rate Gauge**: Configured via `nominalRateHz` from the backend handshake, showing continuous percentage deviation and colouring nominal (emerald, ≤ ±1 %), warning (amber, ±1–5 %) and out-of-tolerance (rose, > 5 %). One class on the gauge root drives arc, readout and badge, so they cannot disagree. The arc carries **no** `stroke-dashoffset` transition: the offset is rewritten every 33 ms, and a transition longer than the update interval never arrives.
+- **Rate Gauge**: Configured via `nominalRateHz` from the backend handshake, showing the smoothed rate, the instantaneous rate and the percentage deviation from nominal. It reports; it does not grade — see assumption #11 for why the tolerance bands it used to carry were removed rather than retuned. One class on the gauge root drives arc, readout and badge, so they cannot disagree. The arc carries **no** `stroke-dashoffset` transition: the offset is rewritten every 33 ms, and a transition longer than the update interval never arrives.
 - **Fault flags are complete even though waveforms are not**: waveforms are latest-wins, and because acquisition (100 Hz) and publication (30 Hz) are both monotonic-paced, the surviving frame cycles through a *fixed* set of residues rather than a random one — measured, that set never contained a faulted frame. The backend therefore OR-s every fault seen during a tick interval onto whichever frame is drawn. The trace says "something in this 33 ms was wrong"; the log says exactly which frame.
 - **Export (stretch S3)**: the retained ring buffer is already the export — `Export CSV` writes the last 5 000 frame reports (`frame,timestamp,samples,hash,valid,malformed,estimated_rate_hz`) via a Blob. The complete log is the deliverable, so it is what is exported; re-exporting a decimated envelope would be exporting the plot rather than the data.
 - **Visibility Gating**: Background tabs automatically request `setDomain('none')` to halt binary waveform serialization on the backend and reduce browser draw CPU to zero.

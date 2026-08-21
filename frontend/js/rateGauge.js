@@ -2,8 +2,16 @@
  * Sample-rate gauge: one SVG arc, driven by stroke-dashoffset.
  *
  * The gauge shows the EMA (assumption #11) with the honest per-frame value beside it.
- * Tolerance state is one class on the root; every colour comes from CSS off that class,
- * so there is a single source of truth for "which band are we in".
+ *
+ * It reports a rate; it does not grade one. An earlier version scored the reading against
+ * a +-1 % "nominal" band and turned the arc amber or red outside it. The brief asks only
+ * for "the estimated sample rate ... in an output text box of a graphical gauge" -- no
+ * tolerance, no thresholds -- and those bands ended up measuring the transport rather than
+ * the instrument: arrival jitter alone kept a correctly-paced 100.0 Hz stream out of the
+ * green band about 40 % of the time. Worse, the brief assigns red exactly one meaning --
+ * "this frame had the wrong number of samples" -- so a gauge flashing red on a healthy
+ * stream competed with the one signal that *is* specified. Two states remain, and neither
+ * is a verdict: idle, and streaming.
  */
 
 // Arc geometry. The 220 deg sweep is fixed by the path below; changing one means
@@ -15,9 +23,6 @@ const ARC_PATH = `M 20.5 75 A ${ARC_RADIUS} ${ARC_RADIUS} 0 1 1 99.5 75`;
 
 // Full scale is 2x nominal, which puts nominal at the top-centre tick.
 const FULL_SCALE_MULTIPLE = 2;
-
-const NOMINAL_TOLERANCE_PCT = 1;
-const WARNING_TOLERANCE_PCT = 5;
 
 export class RateGauge {
   /**
@@ -98,8 +103,9 @@ export class RateGauge {
       ? `${(instantHz / 1e6).toFixed(3)} Msps`
       : '--';
 
-    // The percentage is the readout that makes the +-1 % criterion legible: 1 % of a
-    // 2 Msps nominal is 1 % of full scale, about two pixels of arc.
+    // Deviation from nominal, reported as a number and left at that. It is genuinely
+    // useful -- it is how you see `?rate_factor=0.5` land as -50 % -- but reading it is
+    // the operator's job, not the gauge's.
     const deviationPct = ((smoothedHz - this.nominalRateHz) / this.nominalRateHz) * 100;
     const sign = deviationPct >= 0 ? '+' : '';
     this.deviationValue.textContent = `${sign}${deviationPct.toFixed(2)} %`;
@@ -107,25 +113,11 @@ export class RateGauge {
     const fraction = Math.min(1, Math.max(0, smoothedHz / (this.nominalRateHz * FULL_SCALE_MULTIPLE)));
     this.progressArc.style.strokeDashoffset = (ARC_LENGTH * (1 - fraction)).toFixed(1);
 
-    this._setBand(Math.abs(deviationPct));
-  }
-
-  _setBand(absDeviationPct) {
-    let band = 'critical';
-    let label = 'OUT OF TOLERANCE';
-    if (absDeviationPct <= NOMINAL_TOLERANCE_PCT) {
-      band = 'nominal';
-      label = `NOMINAL (±${NOMINAL_TOLERANCE_PCT}%)`;
-    } else if (absDeviationPct <= WARNING_TOLERANCE_PCT) {
-      band = 'warning';
-      label = 'TOLERANCE WARNING';
-    }
-    // One class, and CSS derives the arc colour, the readout colour and the badge from
-    // it. Setting the badge's own class alongside this was a second copy of the same
-    // state that could disagree with the first -- and it rewrote className 30 times a
-    // second to the same value.
-    this.root.className = `gauge-card gauge--${band}`;
-    this.statusBadge.textContent = label;
+    // Assigned unconditionally rather than guarded by a "did it change?" check: it is one
+    // string compare per property against a value the browser already holds, 30 times a
+    // second, and the guard would cost more to read than it saves.
+    this.root.className = 'gauge-card gauge--live';
+    this.statusBadge.textContent = 'STREAMING';
   }
 
   reset() {
