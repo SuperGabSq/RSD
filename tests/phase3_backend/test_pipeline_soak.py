@@ -133,7 +133,6 @@ def run_pipeline(sim, duration_s: float, *, domain=WaveformDomain.TIME, sample_r
     return sink, session, publisher, samples
 
 
-@pytest.mark.skipif(not os.path.exists("/proc/self/status"), reason="needs Linux /proc")
 def test_pipeline_streams_the_real_simulator_without_losing_a_frame(simulator):
     """Frames received == frames reported, no gaps, at a real 100 Hz over a real
     socket. This is the Phase 3 guarantee in a single assertion."""
@@ -150,7 +149,6 @@ def test_pipeline_streams_the_real_simulator_without_losing_a_frame(simulator):
     ]
 
 
-@pytest.mark.skipif(not os.path.exists("/proc/self/status"), reason="needs Linux /proc")
 def test_presentation_is_throttled_while_acquisition_is_not(simulator):
     """The central architectural claim, measured end to end: ~100 frames/s in,
     ~30 waveforms/s out, and every one of the 100 still logged."""
@@ -167,14 +165,12 @@ def test_presentation_is_throttled_while_acquisition_is_not(simulator):
     assert sink.waveform_points == {1_000}
 
 
-@pytest.mark.skipif(not os.path.exists("/proc/self/status"), reason="needs Linux /proc")
 def test_estimated_rate_tracks_the_simulators_actual_rate(simulator):
     sim = simulator()
     sink, _, _, _ = run_pipeline(sim, DEFAULT_SHORT_SECONDS)
     assert sink.last_rate_avg == pytest.approx(2_000_000, rel=0.05)
 
 
-@pytest.mark.skipif(not os.path.exists("/proc/self/status"), reason="needs Linux /proc")
 def test_injected_bad_frames_are_reported_without_disturbing_the_stream(simulator):
     """--bad-frame-every, end to end: the red-line requirement, proven against the
     real fault injector rather than a hand-made short payload."""
@@ -186,7 +182,6 @@ def test_injected_bad_frames_are_reported_without_disturbing_the_stream(simulato
     assert sink.gaps == []
 
 
-@pytest.mark.skipif(not os.path.exists("/proc/self/status"), reason="needs Linux /proc")
 def test_a_simulated_drop_reaches_the_client_as_disconnected(simulator):
     """--drop-after, end to end: the connection-dropped popup requirement."""
     sim = simulator("--drop-after", "150")
@@ -208,7 +203,13 @@ def test_a_simulated_drop_reaches_the_client_as_disconnected(simulator):
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(not os.path.exists("/proc/self/status"), reason="needs Linux /proc")
+@pytest.mark.skipif(
+    not os.path.exists("/proc/self/status"),
+    # Only this test needs /proc, and only for the RSS reading. The end-to-end tests
+    # above deliberately do not carry this guard: skipping them off-Linux meant a
+    # Windows developer ran with no pipeline coverage at all and no sign of it.
+    reason="RSS measurement needs Linux /proc",
+)
 def test_five_minute_soak_holds_flat_memory_and_loses_nothing(simulator):
     """The test that catches an unbounded queue.
 

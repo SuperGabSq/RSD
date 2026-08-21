@@ -70,9 +70,18 @@ def test_healthz_reports_the_configuration_the_process_actually_started_with():
     }
 
 
-def test_the_index_explains_itself_while_the_frontend_is_unbuilt():
-    """A bare 404 here would read as a broken deployment rather than as Phase 4 not
-    having landed yet."""
+def test_the_index_serves_the_frontend_or_says_why_it_cannot():
+    """Serves frontend/index.html once it exists, and an explanatory page before that.
+    A bare 404 in either case would read as a broken deployment."""
     response = create_app(Config()).test_client().get("/")
     assert response.status_code == 200
-    assert b"/stream" in response.data
+    assert b"SignalScope" in response.data or b"/stream" in response.data
+
+
+def test_javascript_is_served_with_a_mime_type_es_modules_accept():
+    """`<script type="module">` is refused outright if the server answers with
+    text/plain, and on Windows the registry can map .js to exactly that. The app
+    registers the mapping itself rather than trusting the host."""
+    response = create_app(Config()).test_client().get("/js/app.js")
+    assert response.status_code == 200
+    assert response.mimetype == "text/javascript"
