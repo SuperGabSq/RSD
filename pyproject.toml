@@ -7,13 +7,20 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# `slow` is deselected by default: a suite you will not run because it takes five
+# minutes is a suite that stops catching things. Run the soak with `pytest -m slow`.
+addopts = "-q -m 'not slow'"
+markers = [
+    "slow: long-running soak tests, deselected by default",
+]
 
 [tool.coverage.run]
-# The domain is the only layer with a coverage target: it holds the correctness risk
-# and it is pure, so there is no excuse for a gap. Adapters are covered by the
-# integration tests that arrive with Phase 3.
-source = ["backend/domain"]
+# The domain and the application layer carry the coverage target: between them they
+# hold every correctness and concurrency risk in the system, and both are reachable
+# without binding a socket. The infrastructure adapters are thin translation layers,
+# covered end-to-end by tests/test_upstream_ws.py and tests/test_pipeline_soak.py
+# rather than by line counting.
+source = ["backend/domain", "backend/application"]
 
 [tool.coverage.report]
 fail_under = 85
