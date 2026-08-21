@@ -25,6 +25,17 @@ Fault injection (see README §Assumptions #13):
     --rate-factor F       scale the frame rate (0.5 -> ~1 Msps, 2.0 -> ~4 Msps), to exercise
                           the sample-rate gauge / tolerance styling.
 
+Every flag above is also settable per connection, as a query parameter on the WebSocket
+URL, using the same name with underscores. The flags remain the defaults; a query
+parameter overrides one for that connection only:
+
+    ws://localhost:8765/?bad_frame_every=25
+    ws://localhost:8765/?drop_after=500&rate_factor=0.5
+
+That matters under Docker, where the simulator is a compose service started with a fixed
+command line. Without it, seeing a red log line means editing docker-compose.yml and
+restarting a container; with it, it means typing a URL into the box the GUI already has.
+
 Usage:
     python backend/mock/mock_uc_server.py --port 8765
     python backend/mock/mock_uc_server.py --port 8765 --bad-frame-every 50 --drop-after 500
@@ -37,6 +48,7 @@ import asyncio
 import logging
 import sys
 import time
+import urllib.parse
 
 import numpy as np
 import websockets
@@ -125,6 +137,51 @@ class FaultConfig:
         if self.bad_frame_every and frame_index % self.bad_frame_every == 0:
             return "short"
         return None
+
+
+def faults_for(path: str, defaults: FaultConfig) -> FaultConfig:
+    """Resolve this connection's faults from the request path's query string.
+
+    The command-line flags stay the defaults; a query parameter overrides one of them for
+    this connection only, so a grader can trigger any fault from the app's own URL box
+    without restarting a container. Faults are per-connection anyway -- `drop_after`
+    already counted from zero on every connect -- so there is no shared state to disturb.
+
+    Anything unparseable or non-positive falls back to the default rather than raising: a
+    typo in a demo URL should stream cleanly, not refuse the connection with a stack trace
+    the user cannot see.
+    """
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+
+    def override(name: str, default, cast):
+        if name not in query:
+            return default
+        try:
+            value = cast(query[name][0])
+        except (IndexError, ValueError):
+            log.warning("ignoring unparseable %s=%r in URL", name, query[name])
+            return default
+        if value <= 0:
+            log.warning("ignoring non-positive %s=%r in URL", name, value)
+            return default
+        return value
+
+    resolved = FaultConfig(
+        override("bad_frame_every", defaults.bad_frame_every, int),
+        override("drop_after", defaults.drop_after, int),
+        override("rate_factor", defaults.rate_factor, float),
+        malformed_every=override("malformed_every", defaults.malformed_every, int),
+    )
+    if query:
+        log.info(
+            "per-connection overrides from URL: bad_frame_every=%s, malformed_every=%s, "
+            "drop_after=%s, rate_factor=%.2f",
+            resolved.bad_frame_every or "off",
+            resolved.malformed_every or "off",
+            resolved.drop_after or "off",
+            resolved.rate_factor,
+        )
+    return resolved
 
 
 async def stream_to_client(ws, master: np.ndarray, faults: FaultConfig) -> None:
@@ -218,8 +275,9 @@ async def main_async(args: argparse.Namespace) -> None:
     )
 
     log.info(
-        "config: expected_rate=%.0f Msps (factor=%.2f), bad_frame_every=%s, "
-        "malformed_every=%s, drop_after=%s",
+        "defaults (override per connection with URL query params, e.g. "
+        "ws://host:port/?bad_frame_every=25): expected_rate=%.0f Msps (factor=%.2f), "
+        "bad_frame_every=%s, malformed_every=%s, drop_after=%s",
         SAMPLE_RATE_HZ * args.rate_factor / 1e6,
         args.rate_factor,
         args.bad_frame_every or "off",
@@ -228,7 +286,7 @@ async def main_async(args: argparse.Namespace) -> None:
     )
 
     async def handler(ws):
-        await stream_to_client(ws, master, faults)
+        await stream_to_client(ws, master, faults_for(ws.path, faults))
 
     async with websockets.serve(
         handler,
