@@ -17,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
+from tests.support import BACKEND_DIR
+
 DOMAIN_DIR = BACKEND_DIR / "domain"
 APPLICATION_DIR = BACKEND_DIR / "application"
 

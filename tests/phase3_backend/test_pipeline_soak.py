@@ -19,12 +19,8 @@ from __future__ import annotations
 
 import json
 import os
-import socket
-import subprocess
-import sys
 import threading
 import time
-from dataclasses import dataclass
 
 import pytest
 
@@ -38,9 +34,6 @@ from backend.domain.spectrum import SpectrumAnalyzer
 from backend.domain.validation import FrameValidator
 from backend.infrastructure.upstream_ws import make_source_factory
 from backend.infrastructure.wire import HEADER_BYTES, WireCodec, decode_header
-
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SIMULATOR = os.path.join(REPO_ROOT, "backend", "mock", "mock_uc_server.py")
 
 DEFAULT_SHORT_SECONDS = 8.0
 DEFAULT_SOAK_SECONDS = float(os.environ.get("SOAK_SECONDS", "300"))
@@ -91,62 +84,6 @@ class CountingSink:
         with self._lock:
             self.waveforms += 1
             self.waveform_points.add(header.point_count)
-
-
-@dataclass
-class Simulator:
-    process: subprocess.Popen
-    port: int
-
-    @property
-    def url(self) -> str:
-        return f"ws://127.0.0.1:{self.port}"
-
-    def stop(self) -> None:
-        self.process.terminate()
-        try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:  # pragma: no cover
-            self.process.kill()
-
-
-def _free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
-
-
-def _wait_for_port(port: int, timeout: float = 15.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-                return
-        except OSError:
-            time.sleep(0.05)
-    raise AssertionError(f"simulator never came up on port {port}")
-
-
-@pytest.fixture
-def simulator():
-    started: list[Simulator] = []
-
-    def start(*extra_args: str) -> Simulator:
-        port = _free_port()
-        process = subprocess.Popen(
-            [sys.executable, SIMULATOR, "--host", "127.0.0.1", "--port", str(port), *extra_args],
-            cwd=REPO_ROOT,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        _wait_for_port(port)
-        sim = Simulator(process, port)
-        started.append(sim)
-        return sim
-
-    yield start
-    for sim in started:
-        sim.stop()
 
 
 def build_pipeline(sink: CountingSink) -> tuple[AcquisitionSession, ThrottledPublisher]:

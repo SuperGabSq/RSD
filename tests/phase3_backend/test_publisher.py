@@ -21,8 +21,8 @@ from backend.application.publisher import ThrottledPublisher
 from backend.domain.decimation import MinMaxDecimator
 from backend.domain.spectrum import SpectrumAnalyzer
 from backend.infrastructure.wire import KIND_FREQUENCY_DOMAIN, KIND_TIME_DOMAIN, WireCodec
-from tests.fakes import RecordingSink
-from tests.test_wire import report
+from tests.support.fakes import RecordingSink
+from tests.support.fakes import frame_report as report
 
 FRAME_SAMPLES = 20_000
 

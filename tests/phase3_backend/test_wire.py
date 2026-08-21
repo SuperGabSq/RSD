@@ -7,29 +7,9 @@ import pytest
 
 from backend.application.ports import ConnectionState, WaveformDomain
 from backend.domain.decimation import MinMaxDecimator
-from backend.domain.frame import FrameReport, RawFrame
 from backend.domain.spectrum import SpectrumAnalyzer
 from backend.infrastructure import wire
-
-
-def report(number=1, *, valid=True, malformed=False, rate=2_000_000.0, samples=20_000):
-    from datetime import datetime
-
-    frame = RawFrame(
-        number=number,
-        payload=b"",
-        received_at=datetime(2024, 1, 1, 12, 0, 0),
-        monotonic_s=0.0,
-    )
-    return FrameReport.build(
-        frame,
-        hash_hex="a" * 32,
-        sample_count=samples,
-        is_valid=valid,
-        malformed=malformed,
-        estimated_rate_hz=rate,
-    )
-
+from tests.support.fakes import frame_report as report
 
 # ------------------------------------------------------------------ JSON messages
 

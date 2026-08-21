@@ -21,7 +21,7 @@ from backend.domain.rate import SampleRateEstimator
 from backend.domain.spectrum import SpectrumAnalyzer
 from backend.domain.validation import FrameValidator
 from backend.infrastructure.wire import WireCodec
-from tests.fakes import FakeUpstream, RecordingSink, frame_bytes
+from tests.support.fakes import FakeUpstream, RecordingSink, frame_bytes
 
 EXPECTED = 20_000
 

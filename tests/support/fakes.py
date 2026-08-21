@@ -10,11 +10,42 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Iterator
+from datetime import datetime
 
 import numpy as np
 
 from backend.application.ports import UpstreamClosed, UpstreamConnectionError
+from backend.domain.frame import FrameReport, RawFrame
 from backend.infrastructure.wire import HEADER_BYTES, WaveformHeader, decode_header
+
+FIXED_TIMESTAMP = datetime(2024, 1, 1, 12, 0, 0)
+
+
+def frame_report(
+    number: int = 1,
+    *,
+    valid: bool = True,
+    malformed: bool = False,
+    rate: float | None = 2_000_000.0,
+    samples: int = 20_000,
+    digest: str = "a" * 32,
+) -> FrameReport:
+    """A report with everything defaulted to 'healthy', so each test overrides only the
+    one field it is actually making a claim about."""
+    frame = RawFrame(
+        number=number,
+        payload=b"",
+        received_at=FIXED_TIMESTAMP,
+        monotonic_s=0.0,
+    )
+    return FrameReport.build(
+        frame,
+        hash_hex=digest,
+        sample_count=samples,
+        is_valid=valid,
+        malformed=malformed,
+        estimated_rate_hz=rate,
+    )
 
 
 class RecordingSink:
