@@ -40,8 +40,23 @@ two. Every setting is environment-driven: `EXPECTED_SAMPLES`, `SAMPLE_RATE_HZ`,
 
 ## Driving the simulator
 
-The simulator is configured entirely by command-line flags at launch; there is no runtime
-control. To change fault injection, restart it and press Connect again in the browser.
+**The short version: every fault is triggered from the URL box in the app.** Paste one of
+these into the WebSocket URL field and press Connect. Nothing to restart, nothing to edit.
+
+```
+ws://localhost:8765/                        clean 2 Msps stream
+ws://localhost:8765/?bad_frame_every=25     red log lines
+ws://localhost:8765/?drop_after=500         drop popup
+ws://localhost:8765/?rate_factor=0.5        gauge out of tolerance
+ws://localhost:8765/?malformed_every=40     corrupt framing (reported separately)
+```
+
+They combine: `ws://localhost:8765/?bad_frame_every=25&drop_after=500` gives red lines for
+twenty seconds and then the disconnect popup.
+
+The same settings exist as command-line flags, which set the **defaults** the simulator
+starts with. A query parameter overrides one of them for that connection only; anything
+not named in the URL keeps the flag's value.
 
 ```
 python backend/mock/mock_uc_server.py --port 8765                      # clean 2 Msps stream
@@ -50,19 +65,22 @@ python backend/mock/mock_uc_server.py --port 8765 --drop-after 500     # drop po
 python backend/mock/mock_uc_server.py --port 8765 --rate-factor 0.5    # gauge out of tolerance
 ```
 
-| Flag | Default | Effect |
-|---|---|---|
-| `--host` / `--port` | `0.0.0.0` / `8765` | where it listens |
-| `--bad-frame-every N` | off | every Nth frame carries 19 995 samples — the wrong *count*, but valid framing |
-| `--malformed-every N` | off | every Nth frame is 79 997 bytes — not a whole number of `int32`s, so the framing itself is corrupt |
-| `--drop-after N` | off | closes the connection after N frames |
-| `--rate-factor F` | `1.0` | scales the frame rate: `0.5` → ~1 Msps, `2.0` → ~4 Msps |
-| `--seed` | `42` | noise seed. The three tones are fixed at 50, 210 and 700 kHz |
+| Flag | URL parameter | Default | Effect |
+|---|---|---|---|
+| `--host` / `--port` | — | `0.0.0.0` / `8765` | where it listens |
+| `--bad-frame-every N` | `bad_frame_every` | off | every Nth frame carries 19 995 samples — the wrong *count*, but valid framing |
+| `--malformed-every N` | `malformed_every` | off | every Nth frame is 79 997 bytes — not a whole number of `int32`s, so the framing itself is corrupt |
+| `--drop-after N` | `drop_after` | off | closes the connection after N frames |
+| `--rate-factor F` | `rate_factor` | `1.0` | scales the frame rate: `0.5` → ~1 Msps, `2.0` → ~4 Msps |
+| `--seed` | — | `42` | noise seed. The three tones are fixed at 50, 210 and 700 kHz |
 
-Two things worth knowing. `--drop-after` counts **per connection**, so reconnecting gives
-you another N frames and another drop — which is what makes the popup easy to demonstrate
-more than once. And pacing starts when a client connects rather than when the process
-does, so there is never a backlog to flush on connect.
+Three things worth knowing. Faults were already **per connection** — `--drop-after` counted
+from zero on every connect, which is what makes the popup easy to demonstrate more than
+once — so resolving them per connection from the URL introduces no shared state and no new
+lifecycle. Pacing likewise starts when a client connects rather than when the process does,
+so there is never a backlog to flush on connect. And a query parameter that is unparseable
+or non-positive is logged and ignored rather than refused: a typo in a demo URL streams
+cleanly instead of failing the handshake with an error the browser cannot show you.
 
 The simulator never marks a frame as faulty. It sends a short payload and the backend
 discovers it: `FrameValidator` derives `len(payload) // 4` and compares it against
@@ -70,14 +88,22 @@ discovers it: `FrameValidator` derives `len(payload) // 4` and compares it again
 corrupt frame still gets a fingerprint. The red lines are real detection, not the
 simulator telling the UI what to display.
 
-Under Docker the simulator is a compose service: edit the `command:` line in
-`docker-compose.yml` and restart. No rebuild — the command is not baked into the image.
+Under Docker the simulator is a compose service started with a fixed command line, which is
+exactly why the URL parameters exist: they are the only way to change fault injection
+without stopping a container. `docker compose up` and the URL box cover every requirement
+in the brief. (Changing the *defaults* under Docker still means editing the `command:` line
+in `docker-compose.yml` and restarting — no rebuild, the command is not baked into the
+image — but you should not need to.)
+
+The backend rewrites `localhost:8765` to `simulator:8765` when it is itself containerised,
+and that rewrite preserves the query string, so the URLs above are the same whether you run
+under Docker or from a virtualenv.
 
 `scripts/probe_simulator.py` connects to it directly and reports measured frame rate, byte
 rate and the frame sizes it saw, which answers "is the simulator doing what I asked?"
 without the backend in the way.
 
-**Choosing a demo rate.** `--bad-frame-every 25` is the setting to record with. Fault
+**Choosing a demo rate.** `?bad_frame_every=25` is the setting to demo with. Fault
 flags survive the 30 Hz throttling boundary by design (see the fault-completeness note
 below), so at `--bad-frame-every 5` every 33 ms publish interval contains a faulted frame
 and the 250 ms trace tint never releases — the trace sits permanently red. That is a true
@@ -298,7 +324,11 @@ These are the assumptions made where the brief left something unspecified.
     connection-drop requirements: `--bad-frame-every` (a whole number of samples, but the
     wrong number), `--malformed-every` (a length that is not a multiple of 4, so the
     framing itself is corrupt — a different fault, reported separately), `--drop-after`,
-    and `--rate-factor`.
+    and `--rate-factor`. Each is also settable per connection as a query parameter on the
+    WebSocket URL, so every mandatory failure mode can be demonstrated from the URL box the
+    brief already requires, without restarting the simulator or editing a compose file. The
+    simulator is a test fixture, so accepting instructions from the client costs nothing —
+    the real uC would ignore the query string, and the backend never reads it.
 14. Reconnection is manual, never automatic. The brief specifies a popup on drop and the
     Connect button re-enabled once the popup is closed — auto-reconnect would contradict
     that by re-arming the connection without the user's action.
