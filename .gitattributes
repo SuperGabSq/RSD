@@ -1,0 +1,16 @@
+# Normalise line endings in the repository to LF.
+#
+# Without this, editing a file on Windows rewrites every line, and a commit that
+# changed nine lines arrives as four thousand. The history is part of what is being
+# reviewed here, so a diff that cannot be read is a real cost.
+#
+# `text=auto` lets git decide what is text; `eol=lf` stores LF in the repository while
+# leaving working-tree checkout to the platform.
+* text=auto eol=lf
+
+# Binary, never touched.
+*.png binary
+*.jpg binary
+*.gif binary
+*.pdf binary
+*.so  binary
