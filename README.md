@@ -26,9 +26,44 @@ gunicorn -w 1 -k gthread --threads 4 -b 0.0.0.0:8000 "backend.app:create_app()"
 
 Open `http://localhost:8000`, enter `ws://localhost:8765` in the URL box, click Connect.
 
+## Running the tests
+
+```
+pip install -r requirements.txt
+pytest --cov          # coverage gate: 85 % on backend/domain, currently 100 %
+ruff check .
+```
+
+The suite is pure and offline — no sockets, no sleeps, no clock reads — because every
+clock and hasher is injected. It runs in well under a second, which is what makes it
+usable as a change-by-change gate rather than a pre-commit ritual.
+
+Two tests are worth knowing about by name:
+
+- `test_matches_reference_xxh3_128_digests` — pins our digest against `xxhsum -H128` on
+  fixed vectors. A wrong hash variant is the one defect in this project that would look
+  completely normal on screen while invalidating every log line, so it is gated rather
+  than assumed.
+- `test_domain_has_no_infrastructure_imports` — walks the domain's ASTs and fails if a
+  web framework, socket library, or outer-layer module appears where pure logic belongs.
+  The dependency rule is enforced by one test instead of an extra CI tool.
+
 ## Architecture
 
 _TODO — filled in with Phase 3+: threading model, wire protocol, diagram._
+
+### Domain layer (Phase 2, complete)
+
+Pure, dependency-free (stdlib + numpy + xxhash), fully unit-tested:
+
+| Module | Responsibility | Decision worth noting |
+|---|---|---|
+| `frame.py` | `RawFrame`, `FrameReport` | Frozen dataclasses with `slots`; two clocks — wall-clock for the displayed timestamp, monotonic for rate deltas, so an NTP step can never produce a bogus rate |
+| `hashing.py` | `FrameHasher` protocol, `Xxh3_128Hasher` | Hashes raw bytes before and independently of validation, so a corrupted frame is still fingerprintable |
+| `validation.py` | `FrameValidator` | Distinguishes *wrong sample count* from *malformed* (length not a multiple of 4); both render red, only the second is a framing fault |
+| `rate.py` | `SampleRateEstimator` | Reports instantaneous **and** EMA-smoothed rate so the smoothing hides nothing; unmeasurable intervals report `None` rather than poisoning the EMA with infinity |
+| `decimation.py` | `MinMaxDecimator` | Min/max, not stride — stride sampling aliases and drops single-sample transients, which is exactly what an operator is watching for |
+| `spectrum.py` | `SpectrumAnalyzer` | Hann window with coherent-gain correction; **max**-per-bucket reduction so a narrow spur survives being squeezed from 10 001 bins into 1 000 |
 
 ## Assumptions
 

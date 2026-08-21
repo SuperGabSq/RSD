@@ -7,3 +7,14 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+# The domain is the only layer with a coverage target: it holds the correctness risk
+# and it is pure, so there is no excuse for a gap. Adapters are covered by the
+# integration tests that arrive with Phase 3.
+source = ["backend/domain"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true

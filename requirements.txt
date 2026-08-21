@@ -5,4 +5,5 @@ xxhash==3.4.1
 numpy==1.26.4
 gunicorn==22.0.0
 pytest==8.2.2
+pytest-cov==5.0.0
 ruff==0.5.5
