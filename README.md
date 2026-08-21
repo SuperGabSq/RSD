@@ -259,8 +259,8 @@ While no plot is visible, waveforms are not even parked.
   waveform, thirty times a second, for ever. TD stays `Int32Array` so displayed values
   are exactly the counts received — no lossy conversion inside a measurement instrument.
 
-**Downstream bandwidth:** 2 000 × 4 B ≈ 8 kB per waveform × 30 Hz ≈ **240 kB/s** — a
-**33× reduction** from 8 MB/s upstream, with no loss of visible detail.
+**Downstream bandwidth:** 500 columns × 2 (min, max) × 4 B ≈ 4 kB per waveform × 30 Hz ≈
+**120 kB/s** — a **67× reduction** from 8 MB/s upstream, with no loss of visible detail.
 
 ### Why `gunicorn -w 1`
 
@@ -357,6 +357,25 @@ These are the assumptions made where the brief left something unspecified.
 "Is Python fast enough for 8 MB/s?" is the first question this design invites, so here
 is the arithmetic. The numbers that matter:
 
+**Though it turned out not to be the binding constraint.** Python had ~300× headroom on
+the hot path and never came close to being the bottleneck; the browser's *rasteriser*
+was. Min/max decimation emits two vertices per column, so `TARGET_COLUMNS=1000` handed a
+~1 000 px plot two vertices per pixel under a full-height band fill, and the time-domain
+plot managed **7 redraws/s against a 30 Hz stream** while the frequency-domain plot,
+drawing one line over the same 1 000 bins, held 31. A CPU profile put 97 % of the time in
+browser paint and effectively none in our decode loop.
+
+| `TARGET_COLUMNS` | 1000 | 800 | 640 | 500 | 250 |
+|---|---|---|---|---|---|
+| TD redraws/s | 7 | 22 | 31 | 29 | 31 |
+
+The knee is between 800 and 640, where vertex density crosses one per pixel. The app
+ships **500**, comfortably past it. Nothing is lost: min/max preserves the exact peak
+excursions at any column count, so this trades horizontal resolution from one column per
+pixel to one per two and no spike disappears. The general lesson is that a frontend
+budget written in units of *work the CPU does* misses the work the rasteriser does, and
+only the second one was ever the constraint here.
+
 | Quantity | Value |
 |---|---|
 | Sample rate | 2 000 000 samples/s |
@@ -387,7 +406,7 @@ runs. Both paths produce **byte-identical** output, held there by a property tes
 random buffers at every awkward length the fault injector can produce (19 995, 19 999,
 fewer samples than columns).
 
-| Path | Per frame, 20 000 samples → 1 000 columns |
+| Path | Per frame, 20 000 samples → 1 000 columns (as benchmarked; the app now ships 500) |
 |---|---|
 | C via `ctypes` | **22.8 µs** |
 | numpy | 59.1 µs |
