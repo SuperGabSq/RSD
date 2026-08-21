@@ -84,7 +84,6 @@ class AcquisitionSession:
         self._stopping = threading.Event()
 
         self.frames_received = 0  # written only by the acquisition thread
-        self.text_messages_ignored = 0
 
     @property
     def state(self) -> ConnectionState:
@@ -108,7 +107,6 @@ class AcquisitionSession:
             return
         self._stopping.clear()
         self.frames_received = 0
-        self.text_messages_ignored = 0
         self._rate_estimator.reset()  # a reconnect is a new session, not a continuation
         self._thread = threading.Thread(
             target=self._run, args=(url,), name="acquisition", daemon=True
