@@ -12,8 +12,14 @@ the "asyncio adds nothing at 100 Hz" argument in the README is about the *backen
 has to share a process with Flask/gunicorn. This script has no such constraint.
 
 Fault injection (see README §Assumptions #13):
-    --bad-frame-every N   every Nth frame is short by 5 samples (19995 instead of 20000),
-                          to exercise the red-line / sample-count-mismatch requirement.
+    --bad-frame-every N   every Nth frame is short by 5 whole samples (19995 instead of
+                          20000), to exercise the red-line / sample-count-mismatch path.
+    --malformed-every N   every Nth frame is truncated by 3 bytes, so its length is not a
+                          multiple of 4 and it does not describe a whole number of
+                          int32_le samples at all. A different fault from the one above:
+                          that one means the producer sent the wrong size, this one means
+                          the framing itself is corrupt, and the backend reports them
+                          separately.
     --drop-after N        close the connection after N frames, to exercise the
                           connection-drop popup requirement.
     --rate-factor F       scale the frame rate (0.5 -> ~1 Msps, 2.0 -> ~4 Msps), to exercise
@@ -29,10 +35,33 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import sys
 import time
 
 import numpy as np
 import websockets
+
+# Windows' default timer granularity is ~15.6 ms, which is longer than the 10 ms frame
+# period -- `asyncio.sleep` there would wake up late on almost every frame and the
+# stream would run at ~64 Hz instead of 100 Hz. Asking the multimedia timer for 1 ms
+# resolution fixes it at the source. On Linux the default granularity is already tens
+# of microseconds, so there is nothing to fix and nothing to pay for.
+if sys.platform == "win32":  # pragma: no cover - platform-specific
+    try:
+        import ctypes
+
+        ctypes.windll.winmm.timeBeginPeriod(1)
+    except Exception:  # noqa: BLE001 - a simulator must not fail to start over timing
+        logging.getLogger("mock_uc").warning(
+            "could not raise Windows timer resolution; frame pacing may be coarse"
+        )
+
+# Residual jitter after timeBeginPeriod is still ~1 ms on Windows, so the last stretch
+# before each deadline is spun rather than slept. It is deliberately short: a spin is a
+# fully-consumed CPU core for its duration, and this process is meant to model a
+# microcontroller, not to compete with the backend it is feeding. On Linux the sleep
+# lands accurately enough that no spin is needed at all.
+SPIN_WINDOW_S = 0.0004 if sys.platform == "win32" else 0.0
 
 SAMPLE_RATE_HZ = 2_000_000
 FRAME_SAMPLES = 20_000
@@ -68,11 +97,29 @@ def build_master_buffer(seed: int) -> np.ndarray:
 
 
 class FaultConfig:
-    def __init__(self, bad_frame_every: int, drop_after: int, rate_factor: float):
+    def __init__(
+        self,
+        bad_frame_every: int,
+        drop_after: int,
+        rate_factor: float,
+        malformed_every: int = 0,
+    ):
         self.bad_frame_every = bad_frame_every
+        self.malformed_every = malformed_every
         self.drop_after = drop_after
         self.rate_factor = rate_factor
         self.period_s = BASE_FRAME_PERIOD_S / rate_factor
+
+    def fault_for(self, frame_index: int) -> str | None:
+        """Which fault, if any, this frame carries. Checked in order, so a frame index
+        divisible by both flags is reported as malformed -- the worse diagnosis."""
+        if frame_index == 0:
+            return None  # never fault the first frame; it is the one a demo starts on
+        if self.malformed_every and frame_index % self.malformed_every == 0:
+            return "malformed"
+        if self.bad_frame_every and frame_index % self.bad_frame_every == 0:
+            return "short"
+        return None
 
 
 async def stream_to_client(ws, master: np.ndarray, faults: FaultConfig) -> None:
@@ -92,10 +139,14 @@ async def stream_to_client(ws, master: np.ndarray, faults: FaultConfig) -> None:
                 await ws.close(code=1001, reason="simulated uC disconnect")
                 return
 
+            # Absolute deadlines from a fixed start, never `sleep(period)`: sleeping a
+            # fixed amount loses whatever the wake-up overshoots, every frame, for ever.
             target_time = start + frame_index * faults.period_s
-            now = time.monotonic()
-            if target_time > now:
-                await asyncio.sleep(target_time - now)
+            delay = target_time - time.monotonic()
+            if delay > SPIN_WINDOW_S:
+                await asyncio.sleep(delay - SPIN_WINDOW_S)
+            while time.monotonic() < target_time:  # no-op when SPIN_WINDOW_S is 0
+                pass
 
             offset = (frame_index * FRAME_SAMPLES) % MASTER_BUFFER_SAMPLES
             frame = master[offset : offset + FRAME_SAMPLES]
@@ -104,13 +155,11 @@ async def stream_to_client(ws, master: np.ndarray, faults: FaultConfig) -> None:
                 frame = np.concatenate([frame, master[: FRAME_SAMPLES - len(frame)]])
 
             payload = frame.tobytes()
-            is_fault_frame = (
-                faults.bad_frame_every > 0
-                and frame_index > 0
-                and frame_index % faults.bad_frame_every == 0
-            )
-            if is_fault_frame:
-                payload = payload[:-20]  # 5 fewer int32 samples -> 19995
+            fault = faults.fault_for(frame_index)
+            if fault == "short":
+                payload = payload[:-20]  # 5 fewer whole int32 samples -> 19995
+            elif fault == "malformed":
+                payload = payload[:-3]  # 79997 B: not a whole number of int32 samples
 
             await ws.send(payload)
 
@@ -133,13 +182,20 @@ async def stream_to_client(ws, master: np.ndarray, faults: FaultConfig) -> None:
 
 async def main_async(args: argparse.Namespace) -> None:
     master = build_master_buffer(args.seed)
-    faults = FaultConfig(args.bad_frame_every, args.drop_after, args.rate_factor)
+    faults = FaultConfig(
+        args.bad_frame_every,
+        args.drop_after,
+        args.rate_factor,
+        malformed_every=args.malformed_every,
+    )
 
     log.info(
-        "config: expected_rate=%.0f Msps (factor=%.2f), bad_frame_every=%s, drop_after=%s",
+        "config: expected_rate=%.0f Msps (factor=%.2f), bad_frame_every=%s, "
+        "malformed_every=%s, drop_after=%s",
         SAMPLE_RATE_HZ * args.rate_factor / 1e6,
         args.rate_factor,
         args.bad_frame_every or "off",
+        args.malformed_every or "off",
         args.drop_after or "off",
     )
 
@@ -171,6 +227,13 @@ def parse_args() -> argparse.Namespace:
         default=0,
         metavar="N",
         help="emit a short (19995-sample) frame every Nth frame; 0 disables (default)",
+    )
+    p.add_argument(
+        "--malformed-every",
+        type=int,
+        default=0,
+        metavar="N",
+        help="emit a frame truncated to a non-multiple of 4 bytes every Nth frame; 0 disables",
     )
     p.add_argument(
         "--drop-after",
