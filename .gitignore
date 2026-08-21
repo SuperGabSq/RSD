@@ -9,11 +9,5 @@ venv/
 *.egg-info/
 node_modules/
 .DS_Store
-
-# local-only artifacts from repo setup, not part of the deliverable
-_legacy_placeholder/
-_import_phase0.zip
-_import_phase1.zip
-
-# transient: files staged for manual deletion (this shell cannot unlink)
-_to_delete/
+.vscode
+SignalScope.md

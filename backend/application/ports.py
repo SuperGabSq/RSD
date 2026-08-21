@@ -109,12 +109,21 @@ class MessageCodec(Protocol):
 
     def encode_status(self, state: ConnectionState, message: str = "") -> str: ...
 
+    def encode_config(
+        self,
+        *,
+        nominal_rate_hz: float,
+        expected_samples: int,
+        target_columns: int,
+    ) -> str: ...
+
     def encode_frames(
         self,
         reports: Sequence[FrameReport],
         *,
         smoothed_rate_hz: float | None = None,
         dropped: int = 0,
+        superseded: int = 0,
     ) -> str: ...
 
     def encode_spectrum_axis(self, frequencies_hz: np.ndarray) -> str: ...

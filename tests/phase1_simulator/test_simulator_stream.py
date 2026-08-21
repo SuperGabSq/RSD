@@ -54,7 +54,8 @@ def measure(url: str, duration_s: float) -> dict:
             total_bytes += len(payload)
             sizes[len(payload)] = sizes.get(len(payload), 0) + 1
 
-    elapsed = time.monotonic() - start
+        elapsed = time.monotonic() - start
+
     return {
         "frames": frames,
         "elapsed": elapsed,

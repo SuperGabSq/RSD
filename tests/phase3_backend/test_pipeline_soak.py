@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import statistics
 import threading
 import time
 
@@ -55,6 +56,7 @@ class CountingSink:
         self.invalid = 0
         self.states: list[str] = []
         self.last_rate_avg: float | None = None
+        self.rate_avgs: list[float] = []
         self.waveform_points: set[int] = set()
         self._expected_next = 1
 
@@ -70,6 +72,7 @@ class CountingSink:
             self.dropped += message.get("dropped", 0)
             if "rateAvg" in message:
                 self.last_rate_avg = message["rateAvg"]
+                self.rate_avgs.append(message["rateAvg"])
             for item in message["items"]:
                 number = item["n"]
                 if number != self._expected_next:
@@ -166,9 +169,19 @@ def test_presentation_is_throttled_while_acquisition_is_not(simulator):
 
 
 def test_estimated_rate_tracks_the_simulators_actual_rate(simulator):
+    """Asserted on the median reading, not the last one.
+
+    `rateAvg` is the EMA, and the EMA averages *reciprocal* arrival intervals -- convex,
+    so jitter biases it upward by roughly (sigma/dt)^2 (the arithmetic is in Phase 6 of
+    the plan). One stall-and-burst just before the run ends moves the final reading by
+    several percent, which is why this passed alone and failed whenever the suite ran
+    four simulators at once. The median over the run makes the same claim about the same
+    data without letting one late arrival decide it.
+    """
     sim = simulator()
     sink, _, _, _ = run_pipeline(sim, DEFAULT_SHORT_SECONDS)
-    assert sink.last_rate_avg == pytest.approx(2_000_000, rel=0.05)
+    assert len(sink.rate_avgs) >= 5
+    assert statistics.median(sink.rate_avgs) == pytest.approx(2_000_000, rel=0.05)
 
 
 def test_injected_bad_frames_are_reported_without_disturbing_the_stream(simulator):

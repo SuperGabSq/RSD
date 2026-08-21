@@ -3,18 +3,22 @@
 Real-time visualisation of a 2 Msps signal streamed over WebSocket from a microcontroller.
 Built for the TII-DERC Senior Software Engineer software challenge.
 
-> **Status: first demoable build (Phase 4).** Domain, acquisition pipeline, throttling
-> boundary, WebSocket endpoint, configuration and the browser shell — connection bar,
-> frame log, modals — are all in. The waveform plot lands in Phase 5 and the rate gauge
-> in Phase 6; both have placeholders on the page.
+> **Status: all seven phases complete, plus stretch items S1–S4.**
+> Domain, acquisition pipeline, throttling boundary, `/stream` endpoint, browser shell,
+> time-domain plot (Phase 5), sample-rate gauge (Phase 6), and Docker delivery (Phase 7).
+> Stretch: frequency-domain tab with `setDomain` gating (S1), a `ctypes`-bound C
+> decimator with a numpy fallback (S2), CSV export of the retained log (S3), and live
+> FFT peak detection (S4).
 
 ## Quickstart (Docker)
 
 ```
-docker compose -f docker/docker-compose.yml up --build
+docker compose up --build
 ```
 
-Then open `http://localhost:8000`.
+Then open `http://localhost:8000`, enter `ws://localhost:8765` in the URL box and click
+Connect. That is the whole procedure: the compose file brings up both the app and the
+microcontroller simulator, and the image compiles the optional C decimator on the way.
 
 ## Quickstart (native, Ubuntu 24.04 / Fedora 42)
 
@@ -34,18 +38,64 @@ two. Every setting is environment-driven: `EXPECTED_SAMPLES`, `SAMPLE_RATE_HZ`,
 `PUBLISH_HZ`, `TARGET_COLUMNS`, `SPECTRUM_BINS`, `MAX_PENDING_REPORTS`,
 `UPSTREAM_CONNECT_TIMEOUT_S`, `RATE_EMA_ALPHA`, `MAX_DOWNSTREAM_MESSAGE_BYTES`.
 
+## Driving the simulator
+
+The simulator is configured entirely by command-line flags at launch; there is no runtime
+control. To change fault injection, restart it and press Connect again in the browser.
+
+```
+python backend/mock/mock_uc_server.py --port 8765                      # clean 2 Msps stream
+python backend/mock/mock_uc_server.py --port 8765 --bad-frame-every 25 # red log lines
+python backend/mock/mock_uc_server.py --port 8765 --drop-after 500     # drop popup
+python backend/mock/mock_uc_server.py --port 8765 --rate-factor 0.5    # gauge out of tolerance
+```
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--host` / `--port` | `0.0.0.0` / `8765` | where it listens |
+| `--bad-frame-every N` | off | every Nth frame carries 19 995 samples — the wrong *count*, but valid framing |
+| `--malformed-every N` | off | every Nth frame is 79 997 bytes — not a whole number of `int32`s, so the framing itself is corrupt |
+| `--drop-after N` | off | closes the connection after N frames |
+| `--rate-factor F` | `1.0` | scales the frame rate: `0.5` → ~1 Msps, `2.0` → ~4 Msps |
+| `--seed` | `42` | noise seed. The three tones are fixed at 50, 210 and 700 kHz |
+
+Two things worth knowing. `--drop-after` counts **per connection**, so reconnecting gives
+you another N frames and another drop — which is what makes the popup easy to demonstrate
+more than once. And pacing starts when a client connects rather than when the process
+does, so there is never a backlog to flush on connect.
+
+The simulator never marks a frame as faulty. It sends a short payload and the backend
+discovers it: `FrameValidator` derives `len(payload) // 4` and compares it against
+`EXPECTED_SAMPLES`, and the hash is taken over the raw bytes *before* validation, so a
+corrupt frame still gets a fingerprint. The red lines are real detection, not the
+simulator telling the UI what to display.
+
+Under Docker the simulator is a compose service: edit the `command:` line in
+`docker-compose.yml` and restart. No rebuild — the command is not baked into the image.
+
+`scripts/probe_simulator.py` connects to it directly and reports measured frame rate, byte
+rate and the frame sizes it saw, which answers "is the simulator doing what I asked?"
+without the backend in the way.
+
+**Choosing a demo rate.** `--bad-frame-every 25` is the setting to record with. Fault
+flags survive the 30 Hz throttling boundary by design (see the fault-completeness note
+below), so at `--bad-frame-every 5` every 33 ms publish interval contains a faulted frame
+and the 250 ms trace tint never releases — the trace sits permanently red. That is a true
+statement about a stream where one frame in five is broken, but it stops the tint carrying
+information. At 25 the trace tints and clears visibly.
+
 ## Running the tests
 
 ```
 pip install -r requirements.txt
-pytest                     # 191 tests, ~105 s
-pytest tests/phase2_domain # or any single phase
-pytest --cov               # coverage gate: 85 % on domain + application, currently 97 %
-pytest -m slow             # the long-running acceptance runs, deselected by default
+pytest                          # the full suite across all phases
+pytest tests/phase7_spectrum   # or any single phase
+pytest --cov                    # coverage gate: 85 % on domain + application, currently 97 %
+pytest -m slow                  # the long-running acceptance runs, deselected by default
 ruff check .
 ```
 
-Tests are grouped by the phase whose acceptance criteria they defend, so "is Phase 2
+Tests are grouped by the phase whose acceptance criteria they defend, so "is Phase 7
 still good?" is one command rather than an act of memory:
 
 | Directory | Defends | Notes |
@@ -53,6 +103,9 @@ still good?" is one command rather than an act of memory:
 | `tests/phase1_simulator/` | the uC simulator | Talks to it over a real socket with a plain `websockets` client and imports nothing from `backend/`. A failure here can only be the simulator's fault. |
 | `tests/phase2_domain/` | the pure domain | No I/O at all: every clock and hasher is injected, so assertions are exact and nothing sleeps. |
 | `tests/phase3_backend/` | the acquisition pipeline and the `/stream` route | Mostly in-memory fakes; `test_upstream_ws.py`, `test_stream_route.py` and `test_pipeline_soak.py` deliberately bind real sockets. |
+| `tests/phase5_plot/` | time-domain waveform streaming | Talks to Flask on a real ephemeral port and verifies 8-byte header, int32 min/max pairs, and fault flag propagation. |
+| `tests/phase6_rate/` | sample rate telemetry & gauge | Verifies rateAvg telemetry against nominal rate and scaled factor stream rates. |
+| `tests/phase7_spectrum/` | frequency-domain spectrum streaming | Verifies spectrumAxis metadata, float32 dB payloads, multi-tone spectral peak detection (50/210/700 kHz), and domain toggling. |
 | `tests/architecture/` | the dependency rule | Cross-cutting by nature — it constrains every layer, so it does not belong to one phase. |
 | `tests/support/` | — | Fixtures and in-memory doubles. No assertions live here. |
 
@@ -283,6 +336,51 @@ Per-frame cost on the acquisition thread, against that 10 ms deadline:
 Decimation (~30 µs) and `rfft` (~300 µs) are not in that column: they run on the
 publisher thread, at ≤30 Hz, and only for frames that are actually drawn.
 
+### The C decimator, and why it is optional
+
+`backend/native/minmax.c` is the same min/max reduction as the numpy path — ~40 lines,
+bound with `ctypes`, loaded at import. The Dockerfile compiles it; `decimation.py` falls
+back to numpy when the library is absent, and a test hides the `.so` to prove that branch
+runs. Both paths produce **byte-identical** output, held there by a property test over
+random buffers at every awkward length the fault injector can produce (19 995, 19 999,
+fewer samples than columns).
+
+| Path | Per frame, 20 000 samples → 1 000 columns |
+|---|---|
+| C via `ctypes` | **22.8 µs** |
+| numpy | 59.1 µs |
+| Ratio | 2.6× |
+
+Read that table honestly: both are a rounding error against a 10 ms deadline, so the C
+path is not what makes this work. It is here because the Python/compiled-library boundary
+is worth demonstrating, and 2.6× is what the measurement says rather than what a
+benchmark was arranged to say. Drop the build step and the app loses 36 µs a frame and
+nothing else — which is the property that makes it safe to ship.
+
+### One measurement, three statistics
+
+The sample rate is estimated once per frame and reported three ways, because three
+consumers need different things from the same number:
+
+| Statistic | Shown on | Why that one |
+|---|---|---|
+| Instantaneous | each log line | the honest per-frame value the brief asks for |
+| EMA (α = 0.1) | the gauge | readable; responds to a real change in ~10 frames |
+| Session mean | the FD frequency axis | immune to a single stall-and-burst |
+
+The third is not decoration. A frequency axis is `fs/2` wide, so any error in `fs` moves
+*every* peak by the same proportion — and the EMA averages **reciprocal** arrival
+intervals, which is convex, so jitter biases it upward by roughly `(σ/Δt)²`. On a loaded
+host that is +1 % at 1 ms of jitter, and transient excursions past 6 Msps are reachable,
+which would put a 50 kHz tone at 157 kHz. Total samples over total elapsed time cannot
+move like that: a burst arriving early is cancelled by the gap before it.
+
+**This means the gauge reads slightly high on a jittery machine, by an amount that
+depends on the host rather than on the instrument.** It is a property of the estimator
+the brief specifies, not a defect, and it is not something the EMA can remove — the bias
+is in the mean. The per-frame value is displayed beside the smoothed one precisely so
+nothing is hidden.
+
 The point is not that Python is fast. It is that at 100 Hz the *Python* work per frame
 is a handful of dictionary and attribute operations, while the per-sample work happens
 in C inside numpy and xxhash — both with the GIL released, so the 100 Hz thread and the
@@ -315,32 +413,26 @@ Submitted as a software challenge deliverable.
 ## Frontend notes
 
 Vanilla ES modules served by Flask from the same origin as `/stream` — no bundler, no
-framework, no build step. Five modules: `wsClient` (socket and message dispatch),
-`stateMachine` (connection states → button and status-dot bindings), `frameLog`
-(bounded rendering), `modal` (native `<dialog>`), and `app` (wiring).
+framework, no build step. Eight modules:
+- `wsClient`: socket lifecycle, text JSON parsing, binary waveform decoding, domain switching (`setDomain`), and background tab visibility gating.
+- `stateMachine`: connection states (`idle`, `connecting`, `streaming`, `disconnected`, `error`, `backend_offline`) driving control inputs and status badges.
+- `frameLog`: ring-buffered frame log (5 000 in memory, 500 in DOM) with auto-scroll and red fault line styling.
+- `modal`: native `<dialog>` controller for connection and runtime error dialogs.
+- `plotTD`: uPlot time-domain renderer. Preallocated buffers, an rAF latest-wins render loop, asymmetric-hysteresis autoscale, 2D drag-zoom, trace hold, and a 250 ms latched fault tint. Scales are driven by uPlot `range` callbacks so each frame costs exactly one redraw.
+- `plotFD`: the frequency-domain counterpart (stretch S1/S4) — Hann-windowed spectrum, backend-supplied frequency axis, live peak readout, max hold.
+- `rateGauge`: precision SVG radial arc gauge with dynamic nominal baseline, percentage deviation, and tolerance color token styling.
+- `app`: dependency injection, DOM binding, and `?debug=1` performance HUD.
 
-Three decisions worth stating, because each is a deviation or a constraint the brief
-implies rather than states:
+### Key Architectural & Design Decisions
 
-- **The log is a `<div>` list, not a `<textarea>`.** The brief asks for a "textbox" and
-  separately requires mismatched frames to render red. A `<textarea>` cannot colour
-  individual lines, so the two requirements conflict; the colour requirement wins,
-  because it carries information and the element choice does not.
-- **The line is composed from backend fields, never re-derived.** `ts` is the backend's
-  receipt time rendered verbatim (assumption #9) and the sample count is printed bare —
-  no locale separators — so the line matches the brief's example character for
-  character: `[2026-08-20 18:00:00]: Frame 1 | 20000 | e2966f42…`.
-- **Two sockets, two failure modes.** The browser↔backend socket dying is a different
-  event from the microcontroller dropping, and gets its own terminal state
-  (`backend_offline`) rather than reusing `error`. There is no auto-reconnect on either
-  hop — assumption #14 — and once the backend socket is gone the Connect button stays
-  disabled, because re-enabling it would only produce a second failure.
+- **Lossy Waveform Presentation vs. Lossless Log Audit Trail**: The human eye cannot resolve 100 waveform redraws/second (causing 100% CPU lockup and severe browser lag). Waveforms are throttled at the backend boundary to 30 Hz (and decoupled on the frontend via an rAF latest-wins slot), while 100% of frame reports are delivered in batched JSON payloads so that every single acquired frame is logged with zero omissions.
+- **The log is a `<div>` list, not a `<textarea>`.** The brief asks for a "textbox" and separately requires mismatched frames to render red. A `<textarea>` cannot colour individual lines, so the two requirements conflict; the colour requirement wins, because it carries information and the element choice does not.
+- **The line is composed from backend fields, never re-derived.** `ts` is the backend's receipt time rendered verbatim (assumption #9) and the sample count is printed bare — no locale separators — so the line matches the brief's example character for character: `[2026-08-20 18:00:00]: Frame 1 | 20000 | e2966f42…`.
+- **Preallocated Buffers & Zero-Copy Alignment**: Binary waveforms arrive as 8-byte header (`<IBBH`) + int32 min/max pairs. The frontend creates a typed `new Int32Array(event.data, 8, pointCount * 2)` view directly over the aligned `ArrayBuffer` and de-interleaves in-place into preallocated typed arrays without GC churn.
+- **Exact Span for Truncated Frames**: The frontend caches `frameNumber -> sample_count` from incoming frame log batches so that truncated/malformed frames map to their exact true sample span rather than stretching to fill nominal width.
+- **2D Drag-Zoom with Autoscale Hysteresis**: Oscilloscope amplitude/time zoom is enabled via uPlot 2D box selection (`drag: { x: true, y: true }`). In autoscale mode, expansion is instantaneous on new peaks while contraction uses a 1.0s decay window to prevent dizzying jitter.
+- **Dynamic Tolerance Rate Gauge**: Configured via `nominalRateHz` from the backend handshake, showing continuous percentage deviation and colouring nominal (emerald, ≤ ±1 %), warning (amber, ±1–5 %) and out-of-tolerance (rose, > 5 %). One class on the gauge root drives arc, readout and badge, so they cannot disagree. The arc carries **no** `stroke-dashoffset` transition: the offset is rewritten every 33 ms, and a transition longer than the update interval never arrives.
+- **Fault flags are complete even though waveforms are not**: waveforms are latest-wins, and because acquisition (100 Hz) and publication (30 Hz) are both monotonic-paced, the surviving frame cycles through a *fixed* set of residues rather than a random one — measured, that set never contained a faulted frame. The backend therefore OR-s every fault seen during a tick interval onto whichever frame is drawn. The trace says "something in this 33 ms was wrong"; the log says exactly which frame.
+- **Export (stretch S3)**: the retained ring buffer is already the export — `Export CSV` writes the last 5 000 frame reports (`frame,timestamp,samples,hash,valid,malformed,estimated_rate_hz`) via a Blob. The complete log is the deliverable, so it is what is exported; re-exporting a decimated envelope would be exporting the plot rather than the data.
+- **Visibility Gating**: Background tabs automatically request `setDomain('none')` to halt binary waveform serialization on the backend and reduce browser draw CPU to zero.
 
-The log keeps 5 000 lines in a fixed-capacity ring buffer behind a 500-node DOM cap
-(assumption #15). Auto-scroll pauses the moment the operator scrolls up and resumes when
-they return to the bottom; at 100 lines/s, reading history is impossible otherwise.
-
-There is deliberately no JavaScript test framework — under this budget the test hours go
-where the correctness risk is, which is the backend. Phase 4's acceptance is the manual
-checklist plus `tests/phase3_backend/test_stream_route.py`, which covers the route wiring
-the UI sits on.

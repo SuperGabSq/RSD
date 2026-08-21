@@ -51,6 +51,9 @@ if sys.platform == "win32":  # pragma: no cover - platform-specific
         import ctypes
 
         ctypes.windll.winmm.timeBeginPeriod(1)
+        ntdll = ctypes.WinDLL("ntdll.dll")
+        actual = ctypes.c_ulong()
+        ntdll.NtSetTimerResolution(10000, 1, ctypes.byref(actual))
     except Exception:  # noqa: BLE001 - a simulator must not fail to start over timing
         logging.getLogger("mock_uc").warning(
             "could not raise Windows timer resolution; frame pacing may be coarse"
@@ -59,9 +62,11 @@ if sys.platform == "win32":  # pragma: no cover - platform-specific
 # Residual jitter after timeBeginPeriod is still ~1 ms on Windows, so the last stretch
 # before each deadline is spun rather than slept. It is deliberately short: a spin is a
 # fully-consumed CPU core for its duration, and this process is meant to model a
-# microcontroller, not to compete with the backend it is feeding. On Linux the sleep
-# lands accurately enough that no spin is needed at all.
-SPIN_WINDOW_S = 0.0004 if sys.platform == "win32" else 0.0
+# microcontroller, not to compete with the backend it is feeding. 1.5 ms of spin per
+# 10 ms frame is ~15 % of one core, which is the price of hitting 100.0 Hz on a platform
+# whose sleep cannot. On Linux the sleep lands accurately enough that the window is zero
+# and the spin loop below never executes a single iteration.
+SPIN_WINDOW_S = 0.0015 if sys.platform == "win32" else 0.0
 
 SAMPLE_RATE_HZ = 2_000_000
 FRAME_SAMPLES = 20_000
@@ -126,12 +131,11 @@ async def stream_to_client(ws, master: np.ndarray, faults: FaultConfig) -> None:
     peer = ws.remote_address
     log.info("client connected: %s", peer)
 
-    frame_index = 0  # 0-based internally; only used to compute buffer offset / fault triggers
     bytes_sent_window = 0
     frames_sent_window = 0
-    window_start = time.monotonic()
-    start = time.monotonic()
-
+    window_start = time.perf_counter()
+    start = time.perf_counter()
+    frame_index = 0
     try:
         while True:
             if faults.drop_after and frame_index >= faults.drop_after:
@@ -142,11 +146,35 @@ async def stream_to_client(ws, master: np.ndarray, faults: FaultConfig) -> None:
             # Absolute deadlines from a fixed start, never `sleep(period)`: sleeping a
             # fixed amount loses whatever the wake-up overshoots, every frame, for ever.
             target_time = start + frame_index * faults.period_s
-            delay = target_time - time.monotonic()
-            if delay > SPIN_WINDOW_S:
-                await asyncio.sleep(delay - SPIN_WINDOW_S)
-            while time.monotonic() < target_time:  # no-op when SPIN_WINDOW_S is 0
-                pass
+            now = time.perf_counter()
+
+            # ...but an absolute deadline that is never re-anchored has the opposite
+            # failure. If the process is starved -- a loaded CI box, a laptop that slept,
+            # a test suite running four simulators at once -- every missed deadline is
+            # already in the past when we wake, so the loop stops waiting at all and
+            # floods frames back to back until it has "caught up". The backend then
+            # measures 2.1 Msps on a stream configured for 1.0. A microcontroller does
+            # not bank the frames it failed to send, so neither do we: fall more than
+            # one period behind and the schedule restarts from now.
+            behind_s = now - target_time
+            if behind_s > faults.period_s:
+                log.warning(
+                    "pacing fell %.1f ms behind; re-anchoring rather than bursting to catch up",
+                    behind_s * 1e3,
+                )
+                start = now - frame_index * faults.period_s
+                target_time = now
+            elif target_time > now:
+                # Sleep the bulk of the wait, then spin only the last SPIN_WINDOW_S.
+                # On Linux that window is zero and the spin loop never runs; on Windows
+                # it is the ~1 ms of residual jitter that survives timeBeginPeriod(1).
+                # Spinning the whole interval instead would burn a core in a process
+                # that is pretending to be a microcontroller.
+                sleep_until = target_time - SPIN_WINDOW_S
+                if sleep_until > now:
+                    await asyncio.sleep(sleep_until - now)
+                while time.perf_counter() < target_time:
+                    pass
 
             offset = (frame_index * FRAME_SAMPLES) % MASTER_BUFFER_SAMPLES
             frame = master[offset : offset + FRAME_SAMPLES]

@@ -1,0 +1,24 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - LOG_LEVEL=INFO
+      - SAMPLE_RATE_HZ=2000000
+      - EXPECTED_SAMPLES=20000
+      - PUBLISH_HZ=30
+      - TARGET_COLUMNS=1000
+      - SPECTRUM_BINS=1000
+    depends_on:
+      - simulator
+
+  simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "backend/mock/mock_uc_server.py", "--host", "0.0.0.0", "--port", "8765"]
+    ports:
+      - "8765:8765"

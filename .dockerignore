@@ -1,0 +1,13 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+*.so
+.pytest_cache
+.ruff_cache
+.vscode
+tests
+*.md
+*.txt
+!requirements.txt

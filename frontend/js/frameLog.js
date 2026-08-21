@@ -1,15 +1,17 @@
 /**
- * Frame Log Manager with batched DocumentFragment rendering and bounded memory.
+ * Frame Log Manager with rAF-coalesced DocumentFragment rendering and bounded memory.
  *
  * Requirements:
  * - Exact line format: `[YYYY-MM-DD HH:MM:SS]: Frame <n> | <samples> | <hash>`
  * - Verbatim receipt timestamp (item.ts), bare sample count (no thousands separator)
- * - 5,000-item in-memory ring buffer (retained for future export)
- * - 500-node DOM cap (oldest elements evicted to maintain smooth 60 fps UI)
+ * - 5,000-item in-memory ring buffer (retained for export)
+ * - 500-node DOM cap with rAF-batched eviction to guarantee smooth 60–120 fps
  * - Red line styling for invalid (is_valid=false) or malformed frames
  * - Dropped frame reporting
  */
 
+// 500, matching the README and the plan's §6 frontend budget. Both numbers are quoted
+// in the submitted documentation, so they are not free to drift.
 const MAX_DOM_LINES = 500;
 const MAX_BUFFER_LINES = 5000;
 
@@ -34,33 +36,44 @@ export class FrameLog {
     this.droppedBannerEl = droppedBannerEl;
     this.droppedTextEl = droppedTextEl;
 
-    /**
-     * Fixed-capacity ring buffer. A plain array with shift() is O(n): at 100 lines/s
-     * against 5 000 entries that is half a million element moves per second, in a
-     * project whose whole argument is that the hot path is cheap. A write index costs
-     * nothing.
-     * @type {Array<object>}
-     */
     this.buffer = new Array(MAX_BUFFER_LINES);
     this.bufferWriteIndex = 0;
     this.bufferCount = 0;
     this.droppedCountTotal = 0;
     this.domLineCount = 0;
 
-    // Auto-scroll pauses the moment the operator scrolls up, and resumes when they
-    // return to the bottom. Without this, reading history at 100 lines/s is impossible:
-    // every batch would yank the viewport back down.
-    this._suppressScrollHandler = false;
-    this.containerEl.addEventListener('scroll', () => {
-      if (this._suppressScrollHandler) return;
-      this.autoScrollCheckbox.checked = this._isScrolledToBottom();
-    });
+    // rAF Coalesced queue
+    this.pendingQueue = [];
+    this.rafScheduled = false;
+
+    // Auto-scroll follows the operator's *intent*, and only a gesture expresses intent.
+    //
+    // The obvious implementation -- listen to `scroll`, set the checkbox to whether we
+    // are at the bottom -- turns auto-scroll off by itself within a second of
+    // connecting. `scroll` events are delivered asynchronously, so a flag raised around
+    // `scrollTop = scrollHeight` is already lowered by the time the event arrives; and
+    // by then the next batch has appended more lines, so the position the handler
+    // measures is stale and reads as "the user scrolled up". At 30 flushes a second it
+    // takes one race to lose the setting, and nothing on screen explains why.
+    //
+    // So the handler is bound to the gestures that actually mean "I want to look at
+    // history", and programmatic scrolling is not one of them.
+    const evaluate = () => {
+      // One frame later: the browser has applied the gesture by then, and reading the
+      // position here rather than in the event keeps the scroll handler layout-free.
+      requestAnimationFrame(() => {
+        this.autoScrollCheckbox.checked = this._isScrolledToBottom();
+      });
+    };
+    for (const eventName of ['wheel', 'touchmove', 'keydown', 'pointerdown']) {
+      this.containerEl.addEventListener(eventName, evaluate, { passive: true });
+    }
   }
 
   _isScrolledToBottom() {
     return (
       this.containerEl.scrollHeight - this.containerEl.scrollTop <=
-      this.containerEl.clientHeight + 4
+      this.containerEl.clientHeight + 8
     );
   }
 
@@ -72,6 +85,37 @@ export class FrameLog {
   appendBatch(items, dropped = 0) {
     if (!items || items.length === 0) return;
 
+    // 1. Immediately store into in-memory ring buffer, O(1) per line
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      this.buffer[this.bufferWriteIndex] = item;
+      this.bufferWriteIndex = (this.bufferWriteIndex + 1) % MAX_BUFFER_LINES;
+      if (this.bufferCount < MAX_BUFFER_LINES) {
+        this.bufferCount++;
+      }
+      this.pendingQueue.push(item);
+    }
+
+    if (dropped && dropped > 0) {
+      this.droppedCountTotal += dropped;
+      this.droppedBannerEl.hidden = false;
+      this.droppedTextEl.textContent = `Warning: Backend reported ${this.droppedCountTotal} dropped reports due to buffer overrun.`;
+    }
+
+    // 2. Schedule DOM flush inside requestAnimationFrame to prevent layout thrashing
+    if (!this.rafScheduled) {
+      this.rafScheduled = true;
+      requestAnimationFrame(() => this._flushDom());
+    }
+  }
+
+  _flushDom() {
+    this.rafScheduled = false;
+    if (this.pendingQueue.length === 0) return;
+
+    const itemsToFlush = this.pendingQueue;
+    this.pendingQueue = [];
+
     // Remove empty state placeholder if present
     const emptyState = this.containerEl.querySelector('.log-empty-state');
     if (emptyState) {
@@ -80,17 +124,8 @@ export class FrameLog {
 
     const fragment = document.createDocumentFragment();
 
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-
-      // 1. In-memory ring buffer (up to 5 000 lines), O(1) per line
-      this.buffer[this.bufferWriteIndex] = item;
-      this.bufferWriteIndex = (this.bufferWriteIndex + 1) % MAX_BUFFER_LINES;
-      if (this.bufferCount < MAX_BUFFER_LINES) {
-        this.bufferCount++;
-      }
-
-      // 2. Format exact line: [YYYY-MM-DD HH:MM:SS]: Frame <n> | <samples> | <hash>
+    for (let i = 0; i < itemsToFlush.length; i++) {
+      const item = itemsToFlush[i];
       const lineEl = document.createElement('div');
       lineEl.className = 'log-line';
 
@@ -105,32 +140,27 @@ export class FrameLog {
       fragment.appendChild(lineEl);
     }
 
-    // 3. One reflow per batch, not one per line
     this.containerEl.appendChild(fragment);
-    this.domLineCount += items.length;
+    this.domLineCount += itemsToFlush.length;
 
-    // 4. Enforce the DOM cap by evicting the oldest lines
-    while (this.domLineCount > MAX_DOM_LINES && this.containerEl.firstElementChild) {
-      this.containerEl.removeChild(this.containerEl.firstElementChild);
-      this.domLineCount--;
+    // Batch eviction of old nodes
+    const excess = this.domLineCount - MAX_DOM_LINES;
+    if (excess > 0) {
+      for (let k = 0; k < excess; k++) {
+        if (this.containerEl.firstElementChild) {
+          this.containerEl.removeChild(this.containerEl.firstElementChild);
+          this.domLineCount--;
+        }
+      }
     }
 
-    // 5. Auto-scroll. Scrolling programmatically fires the scroll event, which would
-    // otherwise be read as the operator having moved the viewport.
+    // Auto-scroll once per rAF tick rather than once per socket message: the read of
+    // scrollHeight forces a layout, and doing it 30 times a second instead of 100 is
+    // most of what this batching buys.
     if (this.autoScrollCheckbox.checked) {
-      this._suppressScrollHandler = true;
       this.containerEl.scrollTop = this.containerEl.scrollHeight;
-      this._suppressScrollHandler = false;
     }
 
-    // 6. Handle dropped frames reporting
-    if (dropped && dropped > 0) {
-      this.droppedCountTotal += dropped;
-      this.droppedBannerEl.hidden = false;
-      this.droppedTextEl.textContent = `Warning: Backend reported ${this.droppedCountTotal} dropped reports due to buffer overrun.`;
-    }
-
-    // 7. Update header badge counter
     this.updateCounter();
   }
 
@@ -142,6 +172,7 @@ export class FrameLog {
     this.bufferWriteIndex = 0;
     this.bufferCount = 0;
     this.domLineCount = 0;
+    this.pendingQueue = [];
     this.containerEl.innerHTML = `
       <div class="log-empty-state" id="logEmptyState">
         Log cleared. Waiting for new frames...
@@ -153,9 +184,7 @@ export class FrameLog {
   }
 
   /**
-   * The retained lines, oldest first. Nothing calls this yet -- it is the read side of
-   * the ring buffer that stretch S3 (export) needs, and the reason the buffer exists at
-   * all rather than being a second copy of the DOM.
+   * The retained lines, oldest first.
    * @returns {Array<object>}
    */
   snapshot() {
@@ -167,9 +196,17 @@ export class FrameLog {
       .concat(this.buffer.slice(0, this.bufferWriteIndex));
   }
 
+  /** S3: the retained log as CSV. The ring buffer is already the export -- it exists so
+   *  the DOM cap does not throw data away, which is exactly what an export needs. */
+  toCsv() {
+    const rows = this.snapshot().map(
+      (i) =>
+        `${i.n},${i.ts},${i.samples},${i.hash},${i.valid},${i.malformed === true},${i.rate ?? ''}`
+    );
+    return ['frame,timestamp,samples,hash,valid,malformed,estimated_rate_hz', ...rows].join('\n');
+  }
+
   updateCounter() {
-    // Counters are tracked as we go: querySelectorAll over 500 nodes on every batch is
-    // a full DOM walk 30 times a second for a number we already know.
     this.counterBadgeEl.textContent =
       `${this.domLineCount} / ${MAX_DOM_LINES} DOM (${this.bufferCount} in buffer)`;
   }

@@ -7,9 +7,22 @@ need it, and a fixture that has to be imported is a fixture that will drift.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from tests.support.simulator import Simulator, start_simulator
+
+if sys.platform == "win32":
+    try:
+        import ctypes
+
+        ctypes.windll.winmm.timeBeginPeriod(1)
+        ntdll = ctypes.WinDLL("ntdll.dll")
+        actual = ctypes.c_ulong()
+        ntdll.NtSetTimerResolution(10000, 1, ctypes.byref(actual))
+    except Exception:
+        pass
 
 
 @pytest.fixture

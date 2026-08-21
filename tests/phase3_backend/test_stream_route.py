@@ -39,15 +39,20 @@ def running_app() -> Generator[tuple[str, Config], None, None]:
     thread.join(timeout=5)
 
 
+def _recv_status(ws) -> dict:
+    while True:
+        msg = json.loads(ws.recv(timeout=5))
+        if msg.get("type") == "status":
+            return msg
+
+
 def test_stream_initial_connection_and_ready_status(running_app: tuple[str, Config]):
     url, _ = running_app
     with websockets.sync.client.connect(url) as ws:
-        msg_raw = ws.recv(timeout=5)
-        assert isinstance(msg_raw, str)
-        msg = json.loads(msg_raw)
-        assert msg["type"] == "status"
-        assert msg["state"] == "idle"
-        assert msg["message"] == "ready"
+        status = _recv_status(ws)
+        assert status["type"] == "status"
+        assert status["state"] == "idle"
+        assert status["message"] == "ready"
 
 
 def test_stream_connect_to_simulator_and_receive_frames(
@@ -59,7 +64,7 @@ def test_stream_connect_to_simulator_and_receive_frames(
 
     with websockets.sync.client.connect(url) as ws:
         # Initial status: ready
-        initial = json.loads(ws.recv(timeout=5))
+        initial = _recv_status(ws)
         assert initial["type"] == "status"
         assert initial["state"] == "idle"
 
@@ -105,13 +110,12 @@ def test_stream_single_client_rejection(running_app: tuple[str, Config]):
     url, _ = running_app
 
     with websockets.sync.client.connect(url) as ws1:
-        ready = json.loads(ws1.recv(timeout=5))
+        ready = _recv_status(ws1)
         assert ready["state"] == "idle"
 
         # Second client attempts to connect
         with websockets.sync.client.connect(url) as ws2:
-            rejected_raw = ws2.recv(timeout=5)
-            rejected = json.loads(rejected_raw)
+            rejected = _recv_status(ws2)
             assert rejected["type"] == "status"
             assert rejected["state"] == "error"
             assert "another browser is already connected" in rejected["message"]
@@ -122,9 +126,9 @@ def test_stream_invalid_control_message_reported_without_crashing(
 ):
     url, _ = running_app
     with websockets.sync.client.connect(url) as ws:
-        json.loads(ws.recv(timeout=5))  # ready
+        _recv_status(ws)  # ready
         ws.send("not json")
-        response = json.loads(ws.recv(timeout=5))
+        response = _recv_status(ws)
         assert response["type"] == "status"
         assert "ignored control message" in response["message"]
 
@@ -146,7 +150,7 @@ def test_closing_the_browser_socket_tears_both_threads_down(
 
     for cycle in range(3):
         with websockets.sync.client.connect(url) as ws:
-            assert json.loads(ws.recv(timeout=5))["state"] == "idle"
+            assert _recv_status(ws)["state"] == "idle"
             ws.send(json.dumps({"type": "connect", "url": sim.url}))
 
             deadline = time.monotonic() + 10.0
@@ -177,14 +181,14 @@ def test_the_single_client_guard_is_released_when_the_first_browser_leaves(
     url, _ = running_app
 
     with websockets.sync.client.connect(url) as first:
-        assert json.loads(first.recv(timeout=5))["state"] == "idle"
+        assert _recv_status(first)["state"] == "idle"
         with websockets.sync.client.connect(url) as second:
-            assert json.loads(second.recv(timeout=5))["state"] == "error"
+            assert _recv_status(second)["state"] == "error"
 
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         with websockets.sync.client.connect(url) as third:
-            message = json.loads(third.recv(timeout=5))
+            message = _recv_status(third)
             if message["state"] == "idle":
                 return
         time.sleep(0.1)
