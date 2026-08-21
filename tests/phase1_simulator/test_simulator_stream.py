@@ -98,24 +98,46 @@ def test_bad_frame_every_injects_short_frames_and_keeps_streaming(simulator):
     assert result["fps"] == pytest.approx(NOMINAL_FPS, abs=3.0)
 
 
-def test_bad_frames_are_still_a_whole_number_of_samples(simulator):
-    """Documents a known gap rather than papering over it.
+def test_bad_frames_stay_a_whole_number_of_samples(simulator):
+    """`--bad-frame-every` means *wrong size*, not *corrupt framing*.
 
-    Every injected fault is short by 20 bytes -- five whole int32 samples -- so it
-    exercises the *wrong sample count* branch and never the *malformed* branch (a
-    length that is not a multiple of 4). The malformed path has unit coverage in
-    Phase 2 but no end-to-end demonstration.
-
-    Recommended fix (~1 line, Phase 4): truncate by 21 bytes, or add
-    ``--malformed-every N``. Then the Phase 7 screen capture can show both failure
-    kinds instead of one.
+    It truncates by 20 bytes -- five whole int32 samples -- so the payload still
+    describes a whole number of samples. That distinction is the entire reason the
+    backend reports `valid` and `malformed` separately, and it only holds if this flag
+    stays on its side of the line.
     """
-    sim = simulator("--bad-frame-every", "10")
-    result = measure(sim.url, SHORT_RUN_S)
-    assert all(size % 4 == 0 for size in result["sizes"]), (
-        "a malformed frame appeared -- if this now fails, the recommendation above has "
-        "been implemented and this test should be replaced by one asserting the opposite"
+    result = measure(simulator("--bad-frame-every", "10").url, SHORT_RUN_S)
+
+    assert all(size % 4 == 0 for size in result["sizes"])
+    assert FRAME_BYTES - 20 in result["sizes"]
+
+
+def test_malformed_every_produces_a_payload_that_is_not_whole_samples(simulator):
+    """The other failure kind, which had no end-to-end demonstration until now.
+
+    A length that is not a multiple of 4 does not describe int32 samples at all: the
+    framing itself is corrupt, rather than the producer having sent the wrong count.
+    Phase 2 covers the branch in unit tests; this is what lets the red-line demo -- and
+    the Phase 7 screen capture -- show both kinds instead of one.
+    """
+    result = measure(simulator("--malformed-every", "10").url, SHORT_RUN_S)
+
+    malformed = [size for size in result["sizes"] if size % 4 != 0]
+    assert malformed == [FRAME_BYTES - 3]
+    assert sum(result["sizes"][size] for size in malformed) == pytest.approx(
+        result["frames"] / 10, rel=0.4
     )
+    assert result["fps"] == pytest.approx(NOMINAL_FPS, abs=3.0)
+
+
+def test_the_two_fault_flags_can_run_together(simulator):
+    """A demo will want both on screen at once. Malformed wins a shared index -- it is
+    the worse diagnosis, and reporting a corrupt frame as merely mis-sized would
+    understate it."""
+    result = measure(simulator("--bad-frame-every", "8", "--malformed-every", "8").url, SHORT_RUN_S)
+
+    assert FRAME_BYTES - 3 in result["sizes"]
+    assert FRAME_BYTES - 20 not in result["sizes"]
 
 
 def test_drop_after_closes_the_connection(simulator):

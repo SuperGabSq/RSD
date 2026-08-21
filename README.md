@@ -3,9 +3,10 @@
 Real-time visualisation of a 2 Msps signal streamed over WebSocket from a microcontroller.
 Built for the TII-DERC Senior Software Engineer software challenge.
 
-> **Status: backend complete (Phase 3).** Domain, acquisition pipeline, throttling
-> boundary, WebSocket endpoint and configuration are all in and tested. The browser UI
-> lands in Phase 4; until then `/` says so and `/stream` is fully usable.
+> **Status: first demoable build (Phase 4).** Domain, acquisition pipeline, throttling
+> boundary, WebSocket endpoint, configuration and the browser shell — connection bar,
+> frame log, modals — are all in. The waveform plot lands in Phase 5 and the rate gauge
+> in Phase 6; both have placeholders on the page.
 
 ## Quickstart (Docker)
 
@@ -37,18 +38,30 @@ two. Every setting is environment-driven: `EXPECTED_SAMPLES`, `SAMPLE_RATE_HZ`,
 
 ```
 pip install -r requirements.txt
-pytest                # 175 tests, ~38 s
-pytest --cov          # coverage gate: 85 % on domain + application, currently 97 %
-pytest -m slow        # the 5-minute soak, deselected by default
+pytest                     # 191 tests, ~105 s
+pytest tests/phase2_domain # or any single phase
+pytest --cov               # coverage gate: 85 % on domain + application, currently 97 %
+pytest -m slow             # the long-running acceptance runs, deselected by default
 ruff check .
 ```
 
-Most of the suite is pure and offline — no sockets, no sleeps, no clock reads — because
-every clock, hasher, source and sink is injected. `test_upstream_ws.py` and
-`test_pipeline_soak.py` are the deliberate exceptions: they bind real sockets, because
-in-memory fakes are only worth anything if something proves they are faithful.
+Tests are grouped by the phase whose acceptance criteria they defend, so "is Phase 2
+still good?" is one command rather than an act of memory:
 
-Four tests are worth knowing about by name:
+| Directory | Defends | Notes |
+|---|---|---|
+| `tests/phase1_simulator/` | the uC simulator | Talks to it over a real socket with a plain `websockets` client and imports nothing from `backend/`. A failure here can only be the simulator's fault. |
+| `tests/phase2_domain/` | the pure domain | No I/O at all: every clock and hasher is injected, so assertions are exact and nothing sleeps. |
+| `tests/phase3_backend/` | the acquisition pipeline and the `/stream` route | Mostly in-memory fakes; `test_upstream_ws.py`, `test_stream_route.py` and `test_pipeline_soak.py` deliberately bind real sockets. |
+| `tests/architecture/` | the dependency rule | Cross-cutting by nature — it constrains every layer, so it does not belong to one phase. |
+| `tests/support/` | — | Fixtures and in-memory doubles. No assertions live here. |
+
+Most of the suite is offline and deterministic. `test_upstream_ws.py` and
+`test_pipeline_soak.py` are the deliberate exceptions: in-memory fakes are only worth
+something if something else proves the real library raises what the adapter claims to
+translate.
+
+Five tests are worth knowing about by name:
 
 - `test_matches_reference_xxh3_128_digests` — pins our digest against `xxhsum -H128` on
   fixed vectors. A wrong hash variant is the one defect in this project that would look
@@ -59,6 +72,9 @@ Four tests are worth knowing about by name:
   where pure logic belongs. The dependency rule is enforced by one test instead of an
   extra CI tool; it is also what forces `MessageCodec` and `DownstreamSink` to exist as
   ports rather than imports.
+- `test_preserves_a_single_sample_spike_that_stride_decimation_would_lose` — the
+  assertion that the cheap decimation shortcut was not taken. Stride sampling passes
+  every other test in that file and fails this one.
 - `test_every_report_survives_batching` — 100 frames in, one tick, 100 log lines out.
   The completeness half of the throttling contract.
 - `test_five_minute_soak_holds_flat_memory_and_loses_nothing` — the only test that can
@@ -112,7 +128,7 @@ All cross-thread state is four fields inside `ThrottledPublisher`, guarded by on
 `threading.Lock`. Producers do nothing under the lock but append or replace; every
 expensive operation happens outside it, so a stalled browser cannot apply backpressure
 to acquisition. Thread-safety is auditable by reading one file, and
-`tests/test_publisher.py` asserts both halves of that claim.
+`tests/phase3_backend/test_publisher.py` asserts both halves of that claim.
 
 Decimation runs on the publisher thread, not the acquisition thread. It is a
 presentation concern — turning 20 000 samples into ~1 000 screen columns — and only
@@ -225,8 +241,11 @@ These are the assumptions made where the brief left something unspecified.
 
 ### Scope & lifecycle
 13. A uC simulator is part of the deliverable, since the graders have no microcontroller. It
-    includes injectable fault modes (`--bad-frame-every`, `--drop-after`, `--rate-factor`) as
-    the only way to demonstrate the red-line and connection-drop requirements.
+    includes injectable fault modes as the only way to demonstrate the red-line and
+    connection-drop requirements: `--bad-frame-every` (a whole number of samples, but the
+    wrong number), `--malformed-every` (a length that is not a multiple of 4, so the
+    framing itself is corrupt — a different fault, reported separately), `--drop-after`,
+    and `--rate-factor`.
 14. Reconnection is manual, never automatic. The brief specifies a popup on drop and the
     Connect button re-enabled once the popup is closed — auto-reconnect would contradict
     that by re-arming the connection without the user's action.
@@ -271,7 +290,7 @@ in C inside numpy and xxhash — both with the GIL released, so the 100 Hz threa
 which is why a single Flask process with two worker threads is not merely adequate here
 but generously so.
 
-**Measured, not asserted.** `tests/test_pipeline_soak.py` runs the real simulator into
+**Measured, not asserted.** `tests/phase3_backend/test_pipeline_soak.py` runs the real simulator into
 the real pipeline over a real socket:
 
 - 5-minute soak: **30 026 frames received, 30 026 reported, zero gaps, zero drops.**
@@ -292,3 +311,36 @@ sits is worth more than crossing it unnecessarily.
 ## License
 
 Submitted as a software challenge deliverable.
+
+## Frontend notes
+
+Vanilla ES modules served by Flask from the same origin as `/stream` — no bundler, no
+framework, no build step. Five modules: `wsClient` (socket and message dispatch),
+`stateMachine` (connection states → button and status-dot bindings), `frameLog`
+(bounded rendering), `modal` (native `<dialog>`), and `app` (wiring).
+
+Three decisions worth stating, because each is a deviation or a constraint the brief
+implies rather than states:
+
+- **The log is a `<div>` list, not a `<textarea>`.** The brief asks for a "textbox" and
+  separately requires mismatched frames to render red. A `<textarea>` cannot colour
+  individual lines, so the two requirements conflict; the colour requirement wins,
+  because it carries information and the element choice does not.
+- **The line is composed from backend fields, never re-derived.** `ts` is the backend's
+  receipt time rendered verbatim (assumption #9) and the sample count is printed bare —
+  no locale separators — so the line matches the brief's example character for
+  character: `[2026-08-20 18:00:00]: Frame 1 | 20000 | e2966f42…`.
+- **Two sockets, two failure modes.** The browser↔backend socket dying is a different
+  event from the microcontroller dropping, and gets its own terminal state
+  (`backend_offline`) rather than reusing `error`. There is no auto-reconnect on either
+  hop — assumption #14 — and once the backend socket is gone the Connect button stays
+  disabled, because re-enabling it would only produce a second failure.
+
+The log keeps 5 000 lines in a fixed-capacity ring buffer behind a 500-node DOM cap
+(assumption #15). Auto-scroll pauses the moment the operator scrolls up and resumes when
+they return to the bottom; at 100 lines/s, reading history is impossible otherwise.
+
+There is deliberately no JavaScript test framework — under this budget the test hours go
+where the correctness risk is, which is the backend. Phase 4's acceptance is the manual
+checklist plus `tests/phase3_backend/test_stream_route.py`, which covers the route wiring
+the UI sits on.

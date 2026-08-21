@@ -29,7 +29,11 @@ def hasher() -> Xxh3_128Hasher:
     return Xxh3_128Hasher()
 
 
-@pytest.mark.parametrize(("payload", "expected"), REFERENCE_VECTORS)
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    REFERENCE_VECTORS,
+    ids=["empty", "short-ascii", "80kB-pattern"],  # or pytest names the case after the payload
+)
 def test_matches_reference_xxh3_128_digests(hasher, payload, expected):
     """CORRECTNESS GATE: our digest is XXH3_128, not some neighbouring variant."""
     assert hasher.hash(payload) == expected

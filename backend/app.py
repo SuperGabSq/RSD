@@ -15,6 +15,7 @@ is visible in the output rather than only in the docs.
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
 
 from flask import Flask, jsonify, send_from_directory
@@ -25,6 +26,13 @@ from backend.infrastructure.stream_route import build_blueprint
 log = logging.getLogger(__name__)
 
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend")
+
+# `<script type="module">` is refused outright if the response is not a JavaScript MIME
+# type, and Python's mimetypes module reads the Windows registry, where .js is sometimes
+# mapped to text/plain. Registering the mapping ourselves means the app does not depend
+# on the host's file associations being sane.
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
 
 
 def create_app(config: Config | None = None) -> Flask:
