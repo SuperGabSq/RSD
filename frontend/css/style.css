@@ -556,10 +556,15 @@ body {
   font-weight: 600;
 }
 
+/* Malformed stays in the red family, hue-shifted to orange-red. It has to stay red: the
+   brief requires red for any frame whose sample count differs from the expected one, and
+   a 79 997-byte payload reports 19 999. But rose-vs-red was a distinction you had to look
+   for, and the two faults mean different things -- wrong size versus corrupt framing -- so
+   they are now separable at a glance without either leaving red. */
 .log-line--malformed {
-  color: #fda4af;
-  background-color: rgba(244, 63, 94, 0.2);
-  border-left-color: #f43f5e;
+  color: #fdba74;
+  background-color: rgba(234, 88, 12, 0.2);
+  border-left-color: #f97316;
   font-weight: 600;
 }
 
