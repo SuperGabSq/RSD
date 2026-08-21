@@ -449,16 +449,21 @@ which is why a single Flask process with two worker threads is not merely adequa
 but generously so.
 
 **Measured, not asserted.** `tests/phase3_backend/test_pipeline_soak.py` runs the real simulator into
-the real pipeline over a real socket:
+the real pipeline over a real socket, and *asserts* rather than reports:
 
-- 5-minute soak: **30 026 frames received, 30 026 reported, zero gaps, zero drops.**
-- Acquisition held ~100 Hz while presentation held ~30 Hz — the rate-decoupling claim,
+- **Every frame received is reported, with no gaps and no drops**, across a 5-minute run.
+- Acquisition holds ~100 Hz while presentation holds ~30 Hz — the rate-decoupling claim,
   measured end to end rather than argued.
-- RSS after warm-up: **flat** (≈12 KiB of movement across 13 000 frames in the trace
-  run). This is the test that catches an unbounded queue, which is otherwise invisible:
-  the frame rate stays perfect right up until the process dies.
+- RSS is **flat** after warm-up. This is the test that catches an unbounded queue, which
+  is otherwise invisible: the frame rate stays perfect right up until the process dies.
 
 Run it with `pytest -m slow` (`SOAK_SECONDS=60` for a quicker pass).
+
+Deliberately no frame counts here. Exact totals are a property of the host that produced
+them — its scheduler, its core count, its load — so a number quoted from my machine is
+not a number this test will produce on yours, and a figure a reviewer cannot reproduce is
+worth less than the assertion that produced it. The pass/fail conditions above are the
+claim; the test is the evidence.
 
 **On WebGL** — named in the job description, and deliberately not used. 2 000 decimated
 columns per frame at 30 Hz sits far below the point where Canvas 2D struggles; uPlot
