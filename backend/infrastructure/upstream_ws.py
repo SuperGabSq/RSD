@@ -59,32 +59,44 @@ class WebSocketUpstreamSource:
         return self._url
 
     def open(self) -> None:
-        try:
-            connection = connect(
-                self._url,
-                max_size=None,
-                compression=None,
-                open_timeout=self._connect_timeout_s,
+        candidate_urls = [self._url]
+        if "localhost:8765" in self._url or "127.0.0.1:8765" in self._url:
+            candidate_urls.append(
+                self._url.replace("localhost:8765", "simulator:8765").replace(
+                    "127.0.0.1:8765", "simulator:8765"
+                )
             )
-        except (InvalidURI, ValueError) as exc:
-            # ValueError as well as InvalidURI: some malformed inputs (an unterminated
-            # IPv6 literal, say) blow up inside urllib before the library ever gets to
-            # validate them. Both mean the same thing to the user -- the URL is wrong.
-            raise UpstreamConnectionError(f"not a valid WebSocket URL: {self._url}") from exc
-        except TimeoutError as exc:
-            raise UpstreamConnectionError(
-                f"timed out after {self._connect_timeout_s:.0f}s connecting to {self._url}"
-            ) from exc
-        except OSError as exc:
-            # Refused, unreachable, DNS failure. errno-level detail helps nobody in a
-            # dialog box, so the message names the thing the user typed.
-            raise UpstreamConnectionError(f"could not reach {self._url}: {exc}") from exc
-        except InvalidHandshake as exc:
-            raise UpstreamConnectionError(
-                f"{self._url} answered, but not as a WebSocket server: {exc}"
-            ) from exc
-        except WebSocketException as exc:
-            raise UpstreamConnectionError(f"could not connect to {self._url}: {exc}") from exc
+
+        connection = None
+        last_exc: Exception | None = None
+        for target_url in candidate_urls:
+            try:
+                connection = connect(
+                    target_url,
+                    max_size=None,
+                    compression=None,
+                    open_timeout=self._connect_timeout_s,
+                )
+                self._url = target_url
+                break
+            except (InvalidURI, ValueError) as exc:
+                raise UpstreamConnectionError(f"not a valid WebSocket URL: {self._url}") from exc
+            except TimeoutError as exc:
+                raise UpstreamConnectionError(
+                    f"timed out after {self._connect_timeout_s:.0f}s connecting to {self._url}"
+                ) from exc
+            except InvalidHandshake as exc:
+                raise UpstreamConnectionError(
+                    f"{self._url} answered, but not as a WebSocket server: {exc}"
+                ) from exc
+            except WebSocketException as exc:
+                raise UpstreamConnectionError(f"could not connect to {self._url}: {exc}") from exc
+            except OSError as exc:
+                last_exc = exc
+                continue
+
+        if connection is None:
+            raise UpstreamConnectionError(f"could not reach {self._url}: {last_exc}")
 
         with self._lock:
             if self._closed:

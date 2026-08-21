@@ -81,11 +81,30 @@ def encode_status(state: ConnectionState, message: str = "") -> str:
     return _dumps({"type": "status", "state": state.value, "message": message})
 
 
+def encode_config(
+    *,
+    nominal_rate_hz: float,
+    expected_samples: int,
+    target_columns: int,
+) -> str:
+    """Sent once per browser connection on handshake so the frontend knows the
+    environment-configured nominal rate, expected samples, and column geometry."""
+    return _dumps(
+        {
+            "type": "config",
+            "nominalRateHz": round(nominal_rate_hz, _RATE_DECIMALS),
+            "expectedSamples": expected_samples,
+            "targetColumns": target_columns,
+        }
+    )
+
+
 def encode_frames(
     reports: Sequence[FrameReport],
     *,
     smoothed_rate_hz: float | None = None,
     dropped: int = 0,
+    superseded: int = 0,
 ) -> str:
     """One batch of log lines.
 
@@ -93,6 +112,9 @@ def encode_frames(
     bounded report queue. It is reported rather than hidden: silently losing log lines
     in a deliverable whose point is a complete log would be the worst possible failure
     mode, so if it ever happens the operator sees the count.
+
+    ``superseded`` is non-zero when presentation waveforms were dropped at the 30 Hz
+    throttling boundary during this tick interval.
     """
     items = []
     for report in reports:
@@ -119,6 +141,8 @@ def encode_frames(
         payload["rateAvg"] = round(smoothed_rate_hz, _RATE_DECIMALS)
     if dropped:
         payload["dropped"] = dropped
+    if superseded:
+        payload["superseded"] = superseded
     return _dumps(payload)
 
 
@@ -207,6 +231,7 @@ class WireCodec:
     __slots__ = ()
 
     encode_status = staticmethod(encode_status)
+    encode_config = staticmethod(encode_config)
     encode_frames = staticmethod(encode_frames)
     encode_spectrum_axis = staticmethod(encode_spectrum_axis)
     encode_time_domain = staticmethod(encode_time_domain)

@@ -23,11 +23,43 @@ counts, and a measurement instrument must not quietly round the numbers it displ
 
 from __future__ import annotations
 
+import ctypes
+import logging
+import os
 from dataclasses import dataclass
 
 import numpy as np
 
+log = logging.getLogger(__name__)
+
 DEFAULT_TARGET_COLUMNS = 1_000
+
+# Optional C implementation of the same reduction, bound with ctypes -- stdlib, so the
+# dependency rule still holds. It is not here for speed: numpy already does this in C in
+# ~30 us. It is here because the boundary between Python and a compiled library is a
+# thing this system has to demonstrate, and 40 lines of kernel is the honest size for it.
+#
+# Missing library, wrong architecture, no compiler in the image -> `_load()` returns None
+# and the numpy path runs. A build-time optimisation that can take the app down is not an
+# optimisation; a test hides the .so to prove this branch is real.
+_LIB_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "native", "libminmax.so")
+
+_INT32_ARRAY = np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS")
+
+
+def _load():
+    try:
+        lib = ctypes.CDLL(os.path.abspath(_LIB_PATH))
+    except OSError:
+        log.info("libminmax.so not loaded; using the numpy decimation path")
+        return None
+    lib.minmax_decimate.restype = None
+    lib.minmax_decimate.argtypes = [_INT32_ARRAY, ctypes.c_int64, ctypes.c_int64, _INT32_ARRAY]
+    log.info("using the C decimation path")
+    return lib
+
+
+_LIB = _load()
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +107,11 @@ class MinMaxDecimator:
         # Fewer samples than columns: one column per sample. Never invent columns by
         # interpolating -- the plot would show detail the instrument never measured.
         columns = min(self._target_columns, n)
+
+        if _LIB is not None:
+            values = np.empty(columns * 2, dtype=np.int32)
+            _LIB.minmax_decimate(np.ascontiguousarray(samples, dtype=np.int32), n, columns, values)
+            return MinMaxEnvelope(columns=columns, values=values)
 
         if n % columns == 0:
             # Fast path, and the only one that runs in practice (20 000 / 1 000).

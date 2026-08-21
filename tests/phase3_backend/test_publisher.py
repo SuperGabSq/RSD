@@ -20,7 +20,12 @@ from backend.application.ports import ConnectionState, WaveformDomain
 from backend.application.publisher import ThrottledPublisher
 from backend.domain.decimation import MinMaxDecimator
 from backend.domain.spectrum import SpectrumAnalyzer
-from backend.infrastructure.wire import KIND_FREQUENCY_DOMAIN, KIND_TIME_DOMAIN, WireCodec
+from backend.infrastructure.wire import (
+    FLAG_INVALID,
+    KIND_FREQUENCY_DOMAIN,
+    KIND_TIME_DOMAIN,
+    WireCodec,
+)
 from tests.support.fakes import RecordingSink
 from tests.support.fakes import frame_report as report
 
@@ -218,6 +223,40 @@ def test_validation_flags_reach_the_waveform(publisher, sink):
     publisher.offer_waveform(1, samples(), is_valid=False, malformed=True)
     publisher.tick()
     assert sink.waveform_headers()[0].flags == 0b11
+
+
+def test_a_fault_survives_the_frame_that_carried_it_being_dropped(publisher, sink):
+    """The samples are lossy; the diagnosis is not.
+
+    This is the regression that motivated the split. Acquisition and presentation are
+    both monotonic-paced, at 100 Hz and 30 Hz, so *which* frame is parked when a tick
+    fires is not random -- it cycles through a fixed set of residues. Measured against
+    the real simulator with ``--bad-frame-every 5``, that set never contained a faulted
+    frame: 0 of 120 waveforms carried FLAG_INVALID while the log correctly showed 79 red
+    lines. The red-trace requirement was unreachable, and it failed intermittently under
+    load, which made it look like flake rather than a phase lock.
+
+    Here the faulted frame is deliberately the one that gets superseded.
+    """
+    publisher.set_domain(WaveformDomain.TIME)
+    publisher.offer_waveform(1, samples(1), is_valid=False)
+    publisher.offer_waveform(2, samples(2))  # healthy, and the one that will be drawn
+    publisher.tick()
+
+    header = sink.waveform_headers()[0]
+    assert header.frame_number == 2, "latest-wins still picks the newest samples"
+    assert header.flags & FLAG_INVALID, "the fault from the dropped frame must survive"
+
+
+def test_fault_bits_do_not_leak_into_the_next_tick(publisher, sink):
+    """A latch that never clears is not a latch, it is a stuck red light."""
+    publisher.set_domain(WaveformDomain.TIME)
+    publisher.offer_waveform(1, samples(1), is_valid=False)
+    publisher.tick()
+    publisher.offer_waveform(2, samples(2))
+    publisher.tick()
+
+    assert [h.flags for h in sink.waveform_headers()] == [FLAG_INVALID, 0]
 
 
 # ---------------------------------------------------------------- status messages

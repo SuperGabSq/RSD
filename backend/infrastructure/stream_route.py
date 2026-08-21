@@ -108,6 +108,11 @@ def _serve(ws, config: Config) -> None:  # pragma: no cover - see module docstri
     )
 
     publisher.start()
+    publisher.publish_config(
+        nominal_rate_hz=config.nominal_sample_rate_hz,
+        expected_samples=config.expected_samples,
+        target_columns=config.target_columns,
+    )
     publisher.publish_status(ConnectionState.IDLE, "ready")
     log.info("browser connected")
 

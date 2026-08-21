@@ -67,7 +67,7 @@ class AcquisitionSession:
         validator: FrameValidator,
         rate_estimator: SampleRateEstimator,
         wall_clock: Callable[[], datetime] = datetime.now,
-        monotonic: Callable[[], float] = time.monotonic,
+        monotonic: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._source_factory = source_factory
         self._publisher = publisher
@@ -224,6 +224,7 @@ class AcquisitionSession:
                 estimated_rate_hz=rate.instantaneous,
             ),
             rate.smoothed,
+            rate.session_mean,
         )
 
         # Zero-copy, read-only view over the payload -- no allocation, and immutable,

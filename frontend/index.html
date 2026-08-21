@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="SignalScope: Real-time 2 Msps signal visualisation from microcontroller stream">
   <title>SignalScope — 2 Msps Signal Visualiser</title>
+  <link rel="stylesheet" href="/vendor/uPlot.min.css">
   <link rel="stylesheet" href="/css/style.css">
+  <script src="/vendor/uPlot.iife.min.js"></script>
 </head>
 <body>
   <div class="app-container">
@@ -50,50 +52,59 @@
     <main class="app-main">
       <!-- Top Metrics & Visualisation Area -->
       <section class="dashboard-grid">
-        <!-- Visualisation Plot Container (Placeholder for Phase 5 TD / S1 FD) -->
+        <!-- Visualisation Plot Container (Phase 5 Time Domain & Phase 7 Spectrum) -->
         <div class="card plot-card">
           <div class="card-header">
             <div class="card-title-group">
-              <h2 class="card-title">Waveform Display</h2>
-              <span class="badge badge--subtle">Time Domain</span>
+              <h2 class="card-title">Signal Visualisation</h2>
+              <div class="domain-switcher" role="tablist" aria-label="Visualisation Domain">
+                <button id="domainTabTD" class="domain-tab domain-tab--active" role="tab" aria-selected="true" data-domain="td" title="Time-domain oscilloscope waveform">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                  </svg>
+                  <span>Time Domain</span>
+                </button>
+                <button id="domainTabFD" class="domain-tab" role="tab" aria-selected="false" data-domain="fd" title="Frequency-domain FFT power spectrum">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M2 20h20M5 20V12M9 20V4M13 20v-8M17 20V8M21 20v-4"></path>
+                  </svg>
+                  <span>Frequency Domain</span>
+                </button>
+              </div>
             </div>
-            <div class="tab-group" id="domainTabs">
-              <button class="tab-btn tab-btn--active" data-domain="td" disabled>Time Domain</button>
-              <button class="tab-btn" data-domain="fd" disabled>Frequency (FFT)</button>
+            <div class="plot-toolbar">
+              <span id="peakFreqBadge" class="badge badge--peak" hidden>Peak: --</span>
+              <label class="checkbox-label" for="traceHoldToggle" title="Track running envelope across frames">
+                <input type="checkbox" id="traceHoldToggle" />
+                <span id="holdToggleLabel">Trace Hold</span>
+              </label>
+              <button id="clearHoldBtn" class="btn btn--secondary btn--xs" disabled>Clear Hold</button>
+              <button id="resetZoomBtn" class="btn btn--secondary btn--xs" title="Reset manual drag-zoom to autoscaling">Reset Zoom</button>
             </div>
           </div>
-          <div class="card-body plot-body" id="plotContainer">
-            <div class="plot-placeholder">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="placeholder-icon">
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-              </svg>
-              <p class="placeholder-title">Waveform Visualisation (Phase 5)</p>
-              <p class="placeholder-subtitle">Real-time uPlot min/max decimation rendering lands in Phase 5</p>
-            </div>
+          <div class="card-body plot-body">
+            <div id="waveformPlot" class="waveform-plot-container"></div>
+            <div id="spectrumPlot" class="waveform-plot-container" hidden></div>
           </div>
         </div>
 
-        <!-- Sample Rate Gauge & Metrics Panel (Placeholder for Phase 6) -->
+        <!-- Sample Rate Gauge & Metrics Panel (Phase 6) -->
         <div class="card metrics-card">
           <div class="card-header">
             <h2 class="card-title">Acquisition Metrics</h2>
           </div>
           <div class="card-body metrics-body">
-            <div class="metric-block">
-              <span class="metric-label">Session Frames</span>
-              <span class="metric-value" id="sessionFramesCount">0</span>
-            </div>
-            <div class="metric-block">
-              <span class="metric-label">Sample Rate (Smoothed)</span>
-              <div class="metric-rate-group">
-                <span class="metric-value metric-value--highlight" id="rateSmoothedDisplay">--</span>
-                <span class="metric-unit">Msps</span>
+            <div id="rateGaugeContainer" class="rate-gauge-wrapper"></div>
+            
+            <div class="metrics-counters-grid">
+              <div class="metric-block">
+                <span class="metric-label">Session Frames</span>
+                <span class="metric-value" id="sessionFramesCount">0</span>
               </div>
-              <span class="metric-subtext">Nominal: 2.00 Msps (Phase 6 gauge)</span>
-            </div>
-            <div class="metric-block">
-              <span class="metric-label">Instantaneous Rate</span>
-              <span class="metric-value metric-value--dim" id="rateInstantDisplay">--</span>
+              <div class="metric-block" title="Waveforms dropped at 30 Hz presentation throttling boundary">
+                <span class="metric-label">Throttled (30 Hz)</span>
+                <span class="metric-value metric-value--dim" id="supersededCount">0</span>
+              </div>
             </div>
           </div>
         </div>
@@ -104,7 +115,8 @@
         <div class="card-header log-header">
           <div class="card-title-group">
             <h2 class="card-title">Frame Log</h2>
-            <span class="badge badge--counter" id="logCounterBadge">0 / 500 DOM (0 in buffer)</span>
+            <!-- Rendered by frameLog.updateCounter(); the cap lives in one place, in JS. -->
+            <span class="badge badge--counter" id="logCounterBadge">0 in view</span>
           </div>
 
           <div class="log-controls">
@@ -112,6 +124,7 @@
               <input type="checkbox" id="autoScrollToggle" checked />
               <span>Auto-scroll</span>
             </label>
+            <button id="exportCsvBtn" class="btn btn--secondary btn--sm" title="Download the retained frame log as CSV">Export CSV</button>
             <button id="clearLogBtn" class="btn btn--secondary btn--sm">Clear View</button>
           </div>
         </div>
@@ -136,6 +149,15 @@
         </div>
       </section>
     </main>
+
+    <!-- Debug Telemetry HUD Overlay (?debug=1) -->
+    <div id="debugOverlay" class="debug-hud" hidden>
+      <div class="debug-hud-title">SignalScope Debug HUD</div>
+      <div class="debug-hud-row"><span>Draws/s:</span><strong id="dbgDraws">0</strong></div>
+      <div class="debug-hud-row"><span>Decode Time:</span><strong id="dbgDecode">0 µs</strong></div>
+      <div class="debug-hud-row"><span>Long Tasks:</span><strong id="dbgLongTasks">0</strong></div>
+      <div class="debug-hud-row"><span>Superseded Total:</span><strong id="dbgSuperseded">0</strong></div>
+    </div>
 
     <!-- Modal Dialog for Connection Errors / Disconnection Alerts -->
     <dialog id="statusModal" class="status-modal" aria-labelledby="modalTitle">

@@ -37,6 +37,19 @@
   padding: 0;
 }
 
+/* The `hidden` attribute is how this app hides the FD plot, the peak badge, the
+   dropped-reports banner and the debug HUD -- but any author `display` rule beats the
+   user agent's `[hidden] { display: none }`, whatever the specificity. Every element
+   hidden that way here also carries a `.badge` or `.alert-banner` class that sets
+   `display`, so without this rule the FD-only peak badge shows in the time domain and
+   the "dropped log reports" warning sits on screen permanently, announcing a fault that
+   never happened. One rule here, rather than a `[hidden]` variant per component --
+   `.waveform-plot-container[hidden]` already existed as exactly that patch, applied to
+   the one place the symptom had been noticed. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   font-family: var(--font-sans);
   background-color: var(--bg-app);
@@ -349,14 +362,22 @@ body {
   border-color: var(--border-color);
 }
 
-/* Plot Placeholder */
+/* The plot area needs a height that does NOT depend on what is inside it.
+   The canvas is sized from the container by a ResizeObserver, so if the container is
+   also sized by the canvas the two chase each other: uPlot's root is the plot height
+   *plus* its legend, the observer reports that larger box, the next setSize() adds
+   another legend's worth, and the canvas grows ~25 px per resize until it is running off
+   the bottom of a card with `overflow: hidden`. The visible symptom is a waveform whose
+   negative half is simply not on screen -- measured at 780 px of canvas inside a 340 px
+   card, with the y-axis starting at 0 instead of -245 000.
+   `min-height` here gives the box a definite size, and `position: absolute` on the
+   container below takes the canvas out of the height calculation entirely. */
 .plot-body {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  min-height: 340px;
   background-color: var(--bg-log);
   position: relative;
+  overflow: hidden;
 }
 
 .plot-placeholder {
@@ -608,3 +629,323 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==========================================================================
+   Waveform Plot & Toolbar Styling (Phase 5)
+   ========================================================================== */
+
+.plot-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btn--xs {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: var(--radius-sm);
+}
+
+/* Absolutely positioned so the canvas cannot feed its own height back into the layout
+   -- see the note on `.plot-body`. The uPlot instance is sized to this box. */
+.waveform-plot-container {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* The uPlot theme overrides live in one block, further down with the rest of the plot
+   styling. They used to be defined twice, here and there, with the later copy silently
+   winning -- so editing this one had no effect at all. */
+
+/* ==========================================================================
+   Rate Gauge Component Styling (Phase 6)
+   ========================================================================== */
+
+.rate-gauge-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.gauge-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.gauge-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.gauge-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.gauge-nominal-tag {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.gauge-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.gauge-svg-wrap {
+  position: relative;
+  width: 120px;
+  height: 90px;
+  flex-shrink: 0;
+}
+
+.gauge-svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.gauge-track {
+  stroke: rgba(51, 65, 85, 0.4);
+}
+
+.gauge-nominal-tick {
+  stroke: #94a3b8;
+}
+
+.gauge-progress {
+  /* No transition on stroke-dashoffset. The offset is rewritten every `frames` message,
+     ~30 Hz, and a 150 ms transition restarted every 33 ms never finishes -- the arc
+     covers about a fifth of each step, so it trails the number beside it permanently and
+     never actually arrives. The EMA is the smoothing (assumption #11); smoothing the
+     smoothed value with CSS just adds lag. `stroke` keeps its transition: the colour
+     changes only when the tolerance band does, which is rare. */
+  transition: stroke 0.2s ease;
+}
+
+.gauge-center-readout {
+  position: absolute;
+  top: 55%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+
+.gauge-value {
+  font-size: 1.125rem;
+  font-weight: 800;
+  font-family: 'JetBrains Mono', monospace;
+  line-height: 1;
+}
+
+.gauge-unit {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.gauge-metrics {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.gauge-metric-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+}
+
+.gauge-metric-label {
+  color: var(--text-secondary);
+}
+
+.gauge-metric-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.gauge-status-badge {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: 0.05em;
+}
+
+/* Tolerance bands. One class on the gauge root drives all three elements -- arc,
+   readout and badge -- so the badge can never disagree with the arc about which band
+   the instrument is in. */
+.gauge--idle .gauge-progress { stroke: var(--text-muted); }
+.gauge--idle .gauge-value { color: var(--text-muted); }
+.gauge--idle .gauge-status-badge { background-color: rgba(100, 116, 139, 0.15); color: var(--text-muted); }
+
+.gauge--nominal .gauge-progress { stroke: #10b981; }
+.gauge--nominal .gauge-value { color: #10b981; }
+.gauge--nominal .gauge-status-badge { background-color: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
+
+.gauge--warning .gauge-progress { stroke: #f59e0b; }
+.gauge--warning .gauge-value { color: #f59e0b; }
+.gauge--warning .gauge-status-badge { background-color: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); }
+
+.gauge--critical .gauge-progress { stroke: #f43f5e; }
+.gauge--critical .gauge-value { color: #f43f5e; }
+.gauge--critical .gauge-status-badge { background-color: rgba(244, 63, 94, 0.15); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.3); animation: pulse-critical 1.5s infinite; }
+
+@keyframes pulse-critical {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.metrics-counters-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-color);
+}
+
+/* ==========================================================================
+   Debug Telemetry HUD (?debug=1)
+   ========================================================================== */
+
+.debug-hud {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  background-color: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: #e2e8f0;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6);
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  backdrop-filter: blur(8px);
+}
+
+.debug-hud-title {
+  color: #38bdf8;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+  border-bottom: 1px solid rgba(56, 189, 248, 0.2);
+  padding-bottom: 0.25rem;
+}
+
+.debug-hud-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+
+/* ==========================================================================
+   Waveform & Spectrum Plot Visualisations (Phase 5 & Phase 7)
+   ========================================================================== */
+
+.domain-switcher {
+  display: flex;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+
+.domain-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--radius-sm) - 2px);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.domain-tab:hover {
+  color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.domain-tab--active {
+  color: #fff;
+  background-color: #1e293b;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.domain-tab[data-domain="td"].domain-tab--active {
+  color: #38bdf8;
+  border-bottom: 2px solid #38bdf8;
+}
+
+.domain-tab[data-domain="fd"].domain-tab--active {
+  color: #a78bfa;
+  border-bottom: 2px solid #a78bfa;
+}
+
+.badge--peak {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  background-color: rgba(167, 139, 250, 0.15);
+  color: #a78bfa;
+  border: 1px solid rgba(167, 139, 250, 0.3);
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+  letter-spacing: 0;
+  text-transform: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* uPlot Dark Theme Overrides */
+.uplot {
+  font-family: 'JetBrains Mono', monospace !important;
+}
+
+.uplot .u-legend {
+  font-size: 11px !important;
+  color: #94a3b8 !important;
+  padding: 4px 8px !important;
+}
+
+.uplot .u-legend .u-series th {
+  color: #cbd5e1 !important;
+}
+
+.uplot .u-select {
+  background: rgba(56, 189, 248, 0.15) !important;
+  border: 1px solid rgba(56, 189, 248, 0.5) !important;
+}
+
+
