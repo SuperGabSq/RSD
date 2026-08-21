@@ -61,18 +61,52 @@ def test_ema_converges_towards_a_steady_rate(estimator):
     assert previous == pytest.approx(1_000_000.0, rel=0.01)
 
 
-def test_smoothed_lags_instantaneous_so_the_gauge_does_not_chase_jitter(estimator):
-    """The point of the gauge's EMA: a one-frame scheduling hiccup must not swing it."""
+def _settled(estimator, frames: int = 30) -> float:
+    """Run an estimator to steady state at 2 Msps; return the *last* timestamp fed to it,
+    so a caller can express the next arrival as an explicit offset from it."""
     t = 0.0
-    for _ in range(30):
+    for _ in range(frames):
         estimator.update(FRAME_SAMPLES, monotonic_s=t)
         t += FRAME_PERIOD_S
+    return t - FRAME_PERIOD_S
 
-    t += FRAME_PERIOD_S * 3  # one frame stalls: a 40 ms gap instead of 10 ms
-    estimate = estimator.update(FRAME_SAMPLES, monotonic_s=t)
+
+def test_smoothed_lags_instantaneous_so_the_gauge_does_not_chase_jitter(estimator):
+    """The point of the gauge's EMA: a one-frame scheduling hiccup must not swing it."""
+    last = _settled(estimator)
+
+    # one frame stalls: a 40 ms gap instead of 10 ms
+    estimate = estimator.update(FRAME_SAMPLES, monotonic_s=last + FRAME_PERIOD_S * 4)
     assert estimate.instantaneous == pytest.approx(500_000.0)
-    # The instantaneous reading collapsed by 4x; the gauge moved by under 8 %.
-    assert estimate.smoothed > 1_840_000.0
+    # The instantaneous reading collapsed by 4x; the gauge moved by under a quarter.
+    assert estimate.smoothed > 1_500_000.0
+
+
+def test_a_burst_and_a_stall_move_the_gauge_by_comparable_amounts():
+    """Why the EMA runs on the interval rather than on the rate.
+
+    Averaging ``1/delta_s`` is convex, so the two directions of the same jitter are not
+    weighted alike. A 10 ms gap arriving as 40 ms is a 4x collapse in the reported rate;
+    a 10 ms gap arriving as ~0 ms is an *unbounded* spike. Under the old rate-EMA the
+    stall moved the gauge 7.5 % while a 6 us burst -- ordinary TCP coalescing -- moved it
+    by four orders of magnitude and then owned it for the whole time constant. That
+    asymmetry, not the jitter itself, is what put red on the screen during a stream the
+    simulator was pacing at a flat 100.0 Hz.
+
+    Smoothing the interval bounds both directions by construction: no single frame can
+    drag the EMA more than alpha of the way towards itself, whichever way it errs.
+    """
+    stalled = SampleRateEstimator(alpha=0.1)
+    stall = stalled.update(FRAME_SAMPLES, monotonic_s=_settled(stalled) + FRAME_PERIOD_S * 4)
+
+    burst = SampleRateEstimator(alpha=0.1)
+    spike = burst.update(FRAME_SAMPLES, monotonic_s=_settled(burst) + 0.000_006)
+
+    assert spike.instantaneous > 3_000_000_000.0  # the raw estimate is still absurd...
+    # ...but the gauge cannot follow it there. Neither excursion runs away, and the burst
+    # -- the one that used to be unbounded -- is now the *smaller* of the two.
+    assert 1_400_000.0 < stall.smoothed < 2_000_000.0
+    assert 2_000_000.0 < spike.smoothed < 2_300_000.0
 
 
 def test_rate_scales_with_sample_count_not_just_interval(estimator):

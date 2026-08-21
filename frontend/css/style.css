@@ -730,8 +730,8 @@ body {
      ~30 Hz, and a 150 ms transition restarted every 33 ms never finishes -- the arc
      covers about a fifth of each step, so it trails the number beside it permanently and
      never actually arrives. The EMA is the smoothing (assumption #11); smoothing the
-     smoothed value with CSS just adds lag. `stroke` keeps its transition: the colour
-     changes only when the tolerance band does, which is rare. */
+     smoothed value with CSS just adds lag. `stroke` keeps its transition: the colour now
+     changes only between idle and streaming, i.e. twice a session. */
   transition: stroke 0.2s ease;
 }
 
@@ -792,29 +792,19 @@ body {
   letter-spacing: 0.05em;
 }
 
-/* Tolerance bands. One class on the gauge root drives all three elements -- arc,
-   readout and badge -- so the badge can never disagree with the arc about which band
-   the instrument is in. */
+/* Two states, and neither is a verdict: idle and streaming. The gauge used to colour
+   itself green/amber/red against a +-1 % tolerance band, but the brief specifies no
+   tolerance for the sample rate, and it reserves red for one thing -- a frame whose
+   sample count is wrong. A gauge that goes red on a healthy stream is competing with
+   that. Colour here now says only "is data arriving", which the arc's own position
+   already answers quantitatively. */
 .gauge--idle .gauge-progress { stroke: var(--text-muted); }
 .gauge--idle .gauge-value { color: var(--text-muted); }
 .gauge--idle .gauge-status-badge { background-color: rgba(100, 116, 139, 0.15); color: var(--text-muted); }
 
-.gauge--nominal .gauge-progress { stroke: #10b981; }
-.gauge--nominal .gauge-value { color: #10b981; }
-.gauge--nominal .gauge-status-badge { background-color: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
-
-.gauge--warning .gauge-progress { stroke: #f59e0b; }
-.gauge--warning .gauge-value { color: #f59e0b; }
-.gauge--warning .gauge-status-badge { background-color: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); }
-
-.gauge--critical .gauge-progress { stroke: #f43f5e; }
-.gauge--critical .gauge-value { color: #f43f5e; }
-.gauge--critical .gauge-status-badge { background-color: rgba(244, 63, 94, 0.15); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.3); animation: pulse-critical 1.5s infinite; }
-
-@keyframes pulse-critical {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
-}
+.gauge--live .gauge-progress { stroke: var(--accent-blue); }
+.gauge--live .gauge-value { color: var(--text-primary); }
+.gauge--live .gauge-status-badge { background-color: rgba(59, 130, 246, 0.15); color: var(--accent-blue); border: 1px solid rgba(59, 130, 246, 0.3); }
 
 .metrics-counters-grid {
   display: grid;

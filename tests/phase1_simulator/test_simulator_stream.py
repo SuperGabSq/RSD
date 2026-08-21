@@ -158,8 +158,8 @@ def test_drop_after_closes_the_connection(simulator):
 
 
 def test_rate_factor_scales_the_stream(simulator):
-    """The only way to demonstrate the gauge's out-of-tolerance styling in Phase 6, so
-    it needs to actually work before Phase 6 depends on it."""
+    """The only way to show the Phase 6 gauge tracking a real rate change rather than
+    sitting at nominal for ever, so it needs to work before Phase 6 depends on it."""
     result = measure(simulator("--rate-factor", "0.5").url, SHORT_RUN_S)
 
     assert result["fps"] == pytest.approx(NOMINAL_FPS / 2, abs=2.0)
