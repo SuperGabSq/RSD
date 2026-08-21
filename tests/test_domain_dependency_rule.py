@@ -17,7 +17,9 @@ from pathlib import Path
 
 import pytest
 
-DOMAIN_DIR = Path(__file__).resolve().parent.parent / "backend" / "domain"
+BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
+DOMAIN_DIR = BACKEND_DIR / "domain"
+APPLICATION_DIR = BACKEND_DIR / "application"
 
 # numpy for per-sample work, xxhash for the required digest. Nothing else: no web
 # framework, no socket library, no serialisation format, no clock wrapper.
@@ -33,9 +35,26 @@ FORBIDDEN_PREFIXES = (
     "backend.infrastructure",
 )
 
+# The application layer orchestrates; it may know the domain and its own ports, and
+# nothing outside. It is allowed no third-party imports the domain is not allowed,
+# which is what forces serialisation and sockets to arrive as injected dependencies
+# rather than as imports.
+APPLICATION_FORBIDDEN_PREFIXES = (
+    "flask",
+    "flask_sock",
+    "simple_websocket",
+    "websockets",
+    "gunicorn",
+    "backend.infrastructure",
+)
+
 
 def domain_modules() -> list[Path]:
     return sorted(p for p in DOMAIN_DIR.glob("*.py") if p.name != "__init__.py")
+
+
+def application_modules() -> list[Path]:
+    return sorted(p for p in APPLICATION_DIR.glob("*.py") if p.name != "__init__.py")
 
 
 def imported_roots(source: str) -> set[str]:
@@ -85,4 +104,34 @@ def test_domain_third_party_imports_are_on_the_allowlist(module: Path):
             continue
         assert root in ALLOWED_THIRD_PARTY, (
             f"{module.name} imports third-party {root!r}, which is not on the domain allowlist"
+        )
+
+
+def test_the_application_package_is_not_empty():
+    assert len(application_modules()) >= 3
+
+
+@pytest.mark.parametrize("module", application_modules(), ids=lambda p: p.name)
+def test_application_has_no_infrastructure_imports(module: Path):
+    """The orchestration layer must not know that the wire is JSON or that the socket
+    is flask-sock. This test is what forces ``MessageCodec`` and ``DownstreamSink`` to
+    exist as ports -- delete it and importing ``wire`` directly would be the path of
+    least resistance."""
+    for name in imported_full_names(module.read_text(encoding="utf-8")):
+        assert not name.startswith(APPLICATION_FORBIDDEN_PREFIXES), (
+            f"{module.name} imports {name!r}: infrastructure has leaked into the application layer"
+        )
+
+
+@pytest.mark.parametrize("module", application_modules(), ids=lambda p: p.name)
+def test_application_third_party_imports_are_on_the_allowlist(module: Path):
+    import sys
+
+    stdlib = sys.stdlib_module_names
+    for root in imported_roots(module.read_text(encoding="utf-8")):
+        if root in stdlib or root == "backend":
+            continue
+        assert root in ALLOWED_THIRD_PARTY, (
+            f"{module.name} imports third-party {root!r}, "
+            "which is not on the application allowlist"
         )
